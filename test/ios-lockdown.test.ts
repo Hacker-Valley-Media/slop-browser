@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   plistNode, buildPlist, encodeLockdownFrame, tryReadLockdownFrame, plistToObject,
 } from "../daemon/ios/lockdown"
+import { HAS_PLUTIL } from "./helpers/macos-tools"
 
 // Locks the lockdown wire format: 4-byte BIG-endian length + XML plist body
 // (distinct from usbmux's little-endian typed header), and the richer plist
@@ -48,7 +49,8 @@ describe("lockdown plist + frame codec", () => {
     expect(second.body.toString()).toContain("<string>B</string>")
   })
 
-  test("plistToObject roundtrips a built plist through plutil", () => {
+  // plistToObject shells out to /usr/bin/plutil; the rest of the codec is pure JS.
+  test.skipIf(!HAS_PLUTIL)("plistToObject roundtrips a built plist through plutil", () => {
     const xml = Buffer.from(buildPlist({ Request: "StartService", Service: "com.apple.afc", Flag: true, N: 5 }))
     const obj = plistToObject(xml)
     expect(obj.Request).toBe("StartService")

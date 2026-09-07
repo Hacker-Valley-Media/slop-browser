@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { nskeyedArchive } from "../daemon/ios/usertunnel"
 import { _decodeReturn } from "../daemon/ios/instruments"
 import { INSTRUMENTS_CHANNEL } from "../shared/ios-dev"
+import { HAS_PLUTIL } from "./helpers/macos-tools"
 
 // Instruments reply decoding: a DTX reply carries the return value nskeyed-encoded
 // in payloadRaw (else the first archived aux entry).
@@ -13,7 +14,8 @@ function auxBytes(archived: Buffer): Buffer {
   return Buffer.concat([nul, h, archived])
 }
 
-describe("instruments reply decode", () => {
+// Fixtures are produced by nskeyedArchive, which shells out to plutil.
+describe.skipIf(!HAS_PLUTIL)("instruments reply decode", () => {
   test("runningProcesses-shaped array from payloadRaw", () => {
     const payloadRaw = nskeyedArchive({ arr: [
       { dict: { pid: { int: 501 }, name: { str: "SpringBoard" } } },

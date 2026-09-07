@@ -237,7 +237,9 @@ export async function runDiagnoseCommand(jsonMode: boolean, contextId?: string):
     lines.push(`⚠ binary mismatch (${m.browser}):`)
     lines.push(`    socket daemon: ${m.runningPath}`)
     lines.push(`    NMH manifest:  ${m.manifestPath}`)
-    lines.push(`    Chrome will spawn the manifest binary; CLI talks to the socket binary.`)
+    // Browser-neutral: the same mismatch applies to Chromium, Brave, and
+    // Firefox, all of which now have their own native-messaging host dir.
+    lines.push(`    ${m.browser} will spawn the manifest binary; CLI talks to the socket binary.`)
     lines.push(`    Fix: run 'interceptor init' or update the NMH manifest to match.`)
   }
 

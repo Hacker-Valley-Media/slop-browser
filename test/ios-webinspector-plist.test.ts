@@ -4,6 +4,7 @@ import {
   decodePlist, decodeBinaryPlist, decodeXmlPlist, encodeXmlPlist, isBinaryPlist,
   PlistError, DEFAULT_PLIST_LIMITS, type PlistValue,
 } from "../daemon/ios/webinspector-plist"
+import { HAS_PLUTIL } from "./helpers/macos-tools"
 
 // Locks the bounded WIR plist codec: binary + XML decode incl. <data>, hard
 // caps that fail before allocation, and well-formed XML encode. Validated
@@ -41,7 +42,8 @@ describe("webinspector plist codec", () => {
     expect((v.__argument.WIRSocketDataKey as Buffer).toString()).toBe("hello-socket-bytes")
   })
 
-  test("binary plist decodes identically to XML (incl. <data> socket payload)", () => {
+  // The three tests below validate against bytes only Apple's plutil can produce.
+  test.skipIf(!HAS_PLUTIL)("binary plist decodes identically to XML (incl. <data> socket payload)", () => {
     const bin = toBinaryPlist(SAMPLE_XML)
     expect(isBinaryPlist(bin)).toBe(true)
     const v = decodeBinaryPlist(bin) as any
@@ -50,13 +52,13 @@ describe("webinspector plist codec", () => {
     expect((v.__argument.WIRSocketDataKey as Buffer).toString()).toBe("hello-socket-bytes")
   })
 
-  test("decodePlist sniffs binary vs XML", () => {
+  test.skipIf(!HAS_PLUTIL)("decodePlist sniffs binary vs XML", () => {
     const bin = toBinaryPlist(SAMPLE_XML)
     expect((decodePlist(bin) as any).__selector).toBe("_rpc_applicationSentListing:")
     expect((decodePlist(Buffer.from(SAMPLE_XML)) as any).__selector).toBe("_rpc_applicationSentListing:")
   })
 
-  test("integers, reals, booleans, nested arrays survive binary encode", () => {
+  test.skipIf(!HAS_PLUTIL)("integers, reals, booleans, nested arrays survive binary encode", () => {
     const obj: PlistValue = { n: 42, big: 70000, neg: -5, f: 1.5, t: true, f2: false, arr: [1, "two", Buffer.from("x")] }
     const bin = toBinaryPlist(encodeXmlPlist(obj))
     const v = decodeBinaryPlist(bin) as any

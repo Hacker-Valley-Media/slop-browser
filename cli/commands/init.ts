@@ -19,7 +19,8 @@ import { ensureDaemon } from "../daemon-spawn"
 import {
   readStatusSnapshot,
   detectConfiguredBrowsers,
-  detectMacOSDefaultBrowser,
+  detectSystemDefaultBrowser,
+  defaultBrowserMatchesConfigured,
   formatStatus,
   snapshotToJson,
   type StatusSnapshot,
@@ -54,16 +55,16 @@ export async function runInitCommand(filtered: string[]): Promise<null> {
 
   const snap: StatusSnapshot = readStatusSnapshot()
 
-  if (verbose && process.platform === "darwin") {
+  // Same platform reasoning as `status --verbose` (cli/commands/meta.ts):
+  // on-disk native-messaging hosts + a discoverable system default browser.
+  if (verbose && (process.platform === "darwin" || process.platform === "linux")) {
     const configured = detectConfiguredBrowsers()
-    const sysDefault = detectMacOSDefaultBrowser()
-    let matches: boolean | null = null
-    if (sysDefault && configured.length > 0) {
-      matches = configured.some(b => b === sysDefault) || (sysDefault === "chrome" || sysDefault === "brave")
-        ? configured.includes(sysDefault as "chrome" | "brave")
-        : false
+    const sysDefault = detectSystemDefaultBrowser()
+    snap.browser = {
+      configured,
+      systemDefault: sysDefault,
+      matches: defaultBrowserMatchesConfigured(configured, sysDefault),
     }
-    snap.browser = { configured, systemDefault: sysDefault, matches }
   }
   if (verbose && snap.daemon) {
     const p = await probe()

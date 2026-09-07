@@ -42,6 +42,15 @@ export type ContextConflictMessage = {
 export type ContextRegisteredMessage = {
   type: "context_registered"
   contextId: string
+  /**
+   * Whether THIS host can deliver OS-level trusted input (macOS only). The
+   * extension cannot see the host OS from a service worker, so without this it
+   * assumes the lane exists and escalates clicks into it — on Linux/Windows
+   * that escalation always fails, turning a synthetic click that DID land into
+   * "click failed at all layers". Optional so an older daemon simply leaves the
+   * extension on its default.
+   */
+  osInput?: boolean
 }
 
 export type ContextClaimResult =
@@ -65,17 +74,20 @@ export function contextConflictMessage(contextId: string): ContextConflictMessag
   }
 }
 
-export function contextRegisteredMessage(contextId: string): ContextRegisteredMessage {
-  return {
+export function contextRegisteredMessage(contextId: string, osInput?: boolean): ContextRegisteredMessage {
+  const message: ContextRegisteredMessage = {
     type: "context_registered",
     contextId,
   }
+  if (typeof osInput === "boolean") message.osInput = osInput
+  return message
 }
 
 export function claimContextId(
   contextMap: Map<string, ContextSocket>,
   ws: ContextSocket,
   contextId: string,
+  osInput?: boolean,
 ): ContextClaimResult {
   const existing = contextMap.get(contextId)
   if (existing && existing !== ws) {
@@ -98,6 +110,6 @@ export function claimContextId(
     status: "registered",
     contextId,
     previousContextId: previousContextId && previousContextId !== contextId ? previousContextId : undefined,
-    message: contextRegisteredMessage(contextId),
+    message: contextRegisteredMessage(contextId, osInput),
   }
 }

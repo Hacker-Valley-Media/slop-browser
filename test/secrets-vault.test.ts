@@ -26,6 +26,20 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
+// O bloco de round-trip usa o keychain REAL do SO (Bun.secrets → Keychain no macOS, libsecret/
+// Secret Service no Linux). Num container/CI headless não há Secret Service, então `set` lança e o
+// bloco é PULADO (mesma postura env-dependente do ios-keychain no port Linux) em vez de falhar.
+// `delete` engole o erro (retorna false), então a sonda usa `set`, que lança sem backend.
+const KEYCHAIN_OK: boolean = await (async () => {
+  try {
+    await vault.set("__probe__", "x")
+    await vault.delete("__probe__")
+    return true
+  } catch {
+    return false
+  }
+})()
+
 describe("names, gates, targets, durations", () => {
   test("names are bounded and safe", () => {
     expect(assertName("admin")).toBe("admin")
@@ -97,7 +111,7 @@ describe("unlock windows", () => {
   })
 })
 
-describe("store, list, resolve, remove (real keychain, throwaway service)", () => {
+describe.skipIf(!KEYCHAIN_OK)("store, list, resolve, remove (real keychain, throwaway service)", () => {
   test("round trip with metadata and release accounting", async () => {
     const meta = await storeSecret(vault, "roundtrip", "hunter2-value", { targets: "sudo,browser:example.com", metaPath })
     expect(meta.gate).toBe("none")

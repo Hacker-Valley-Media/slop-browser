@@ -8,7 +8,7 @@
 
 import { existsSync, readFileSync } from "node:fs"
 import { spawnSync } from "node:child_process"
-import { IS_WIN, SOCKET_PATH, PID_PATH, transportLabel } from "../../shared/platform"
+import { IS_WIN, SOCKET_PATH, PID_PATH, transportLabel, isProcessAlive } from "../../shared/platform"
 import { skillsStatusSummary } from "../commands/skills"
 
 export type StatusSnapshot = {
@@ -30,8 +30,8 @@ export type StatusSnapshot = {
   launchAgentLoaded: boolean
   // #52 browser-config block — populated only on macOS in verbose mode
   browser?: {
-    configured: ("chrome" | "brave")[]   // browsers with NMH manifest installed
-    systemDefault: "chrome" | "brave" | "safari" | "firefox" | "other" | null
+    configured: string[]                 // browsers with an NMH manifest installed
+    systemDefault: DefaultBrowser
     matches: boolean | null              // null when systemDefault unknown
   }
   // #49 extension-reachability probe result — populated only when verbose+daemonAlive
@@ -91,7 +91,9 @@ export function readStatusSnapshot(): StatusSnapshot {
       daemonPid = parseInt(lines[0])
       transport = lines[1] || transportLabel()
       if (!isNaN(daemonPid)) {
-        try { process.kill(daemonPid, 0); daemonAlive = true } catch { daemonAlive = false }
+        // Zombie-aware: a stale pid file naming an unreaped daemon must read as
+        // "not running", not as a daemon nothing can reach.
+        daemonAlive = isProcessAlive(daemonPid)
       }
     } catch {}
   }
@@ -202,13 +204,51 @@ export function computeBridgeHint(input: {
   return []
 }
 
+export type DefaultBrowser = "chrome" | "chromium" | "brave" | "safari" | "firefox" | "other" | null
+
+/**
+ * Detect the system default browser. macOS reads LaunchServices preferences;
+ * Linux asks xdg-settings (the freedesktop equivalent — a `.desktop` file id
+ * such as `google-chrome.desktop`). Returns null on unsupported platforms or
+ * when detection fails. Best-effort — surfaces "unknown" rather than throwing.
+ */
+export function detectSystemDefaultBrowser(): DefaultBrowser {
+  if (process.platform === "linux") return detectLinuxDefaultBrowser()
+  return detectMacOSDefaultBrowser()
+}
+
+/**
+ * Linux default browser via `xdg-settings get default-web-browser`. Returns
+ * null when xdg-utils is absent (common in minimal containers) or the setting
+ * is unset — both mean "unknown", not "none".
+ */
+function detectLinuxDefaultBrowser(): DefaultBrowser {
+  try {
+    const result = spawnSync("xdg-settings", ["get", "default-web-browser"], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+    if (result.status !== 0 || !result.stdout) return null
+    const desktopId = result.stdout.trim().toLowerCase()
+    if (!desktopId) return null
+    // chromium before chrome: they are separate install targets with separate
+    // native-messaging dirs, so collapsing them would report a false match.
+    if (desktopId.includes("brave")) return "brave"
+    if (desktopId.includes("chromium")) return "chromium"
+    if (desktopId.includes("chrome")) return "chrome"
+    if (desktopId.includes("firefox")) return "firefox"
+    return "other"
+  } catch {
+    return null
+  }
+}
+
 /**
  * Detect the macOS system default browser via LaunchServices preferences.
  * Returns null on non-macOS or when detection fails. Best-effort — surfaces
  * "unknown" rather than throwing.
  */
-export function detectMacOSDefaultBrowser():
-  "chrome" | "brave" | "safari" | "firefox" | "other" | null {
+export function detectMacOSDefaultBrowser(): DefaultBrowser {
   if (process.platform !== "darwin") return null
   try {
     // LaunchServices preferences live in a binary plist; convert to JSON.
@@ -235,11 +275,16 @@ export function detectMacOSDefaultBrowser():
   }
 }
 
-// One source of truth for per-user NMH manifest locations on macOS — the same
-// browser set scripts/install.sh can configure. Used by `status` (presence)
-// and `diagnose` (manifest-path vs running-binary mismatch detection).
+// One source of truth for per-user NMH manifest locations — the same browser
+// set scripts/install.sh can configure, per platform. Used by `status`
+// (presence) and `diagnose` (manifest-path vs running-binary mismatch
+// detection). Chromium resolves these dirs itself, so the shapes differ:
+// macOS nests them under ~/Library/Application Support, Linux under the
+// XDG config home. Keep in lockstep with nm_dir_for() in scripts/install.sh —
+// a browser listed here but not there can never have a manifest to find.
 const NMH_MANIFEST_FILE = "com.interceptor.host.json"
-const NMH_BROWSER_DIRS: Record<string, string> = {
+
+const NMH_BROWSER_DIRS_DARWIN: Record<string, string> = {
   "chrome":             "Google/Chrome",
   "brave":              "BraveSoftware/Brave-Browser",
   "chrome-beta":        "Google/Chrome Beta",
@@ -250,13 +295,45 @@ const NMH_BROWSER_DIRS: Record<string, string> = {
   "vivaldi":            "Vivaldi",
 }
 
+// Linux: the four targets scripts/install.sh can configure. Chrome, Brave and
+// Chromium hang off the XDG config home; Firefox does not — Gecko keeps one
+// native-messaging dir per user under ~/.mozilla, outside both the XDG tree and
+// the profile tree, so it is resolved separately in nmhDirsFor().
+const NMH_BROWSER_DIRS_LINUX: Record<string, string> = {
+  "chrome":   "google-chrome",
+  "brave":    "BraveSoftware/Brave-Browser",
+  "chromium": "chromium",
+}
+
+/** Firefox's per-user native-messaging dir, relative to $HOME. Not XDG-based. */
+const NMH_FIREFOX_DIR_LINUX = ".mozilla/native-messaging-hosts"
+
+/** Root the per-browser NMH dirs hang off, per platform. Null when unsupported. */
+function nmhRoot(platform: string, home: string, env: Record<string, string | undefined>): string | null {
+  if (!home) return null
+  if (platform === "darwin") return `${home}/Library/Application Support`
+  if (platform === "linux") return env.XDG_CONFIG_HOME || `${home}/.config`
+  // Windows registers native hosts in the registry, not on disk — nothing to scan.
+  return null
+}
+
 /** Every installed Interceptor NMH manifest: browser slug + manifest file path. */
-export function installedNmhManifests(): Array<{ browser: string; manifestFile: string }> {
-  const home = process.env.HOME || ""
+export function installedNmhManifests(
+  platform: string = process.platform,
+  env: Record<string, string | undefined> = process.env,
+): Array<{ browser: string; manifestFile: string }> {
+  const home = env.HOME || ""
+  const root = nmhRoot(platform, home, env)
+  if (!root) return []
+  const dirs = platform === "linux" ? NMH_BROWSER_DIRS_LINUX : NMH_BROWSER_DIRS_DARWIN
   const out: Array<{ browser: string; manifestFile: string }> = []
-  for (const [browser, dir] of Object.entries(NMH_BROWSER_DIRS)) {
-    const manifestFile = `${home}/Library/Application Support/${dir}/NativeMessagingHosts/${NMH_MANIFEST_FILE}`
+  for (const [browser, dir] of Object.entries(dirs)) {
+    const manifestFile = `${root}/${dir}/NativeMessagingHosts/${NMH_MANIFEST_FILE}`
     if (existsSync(manifestFile)) out.push({ browser, manifestFile })
+  }
+  if (platform === "linux" && home) {
+    const firefoxManifest = `${home}/${NMH_FIREFOX_DIR_LINUX}/${NMH_MANIFEST_FILE}`
+    if (existsSync(firefoxManifest)) out.push({ browser: "firefox", manifestFile: firefoxManifest })
   }
   return out
 }
@@ -265,10 +342,24 @@ export function installedNmhManifests(): Array<{ browser: string; manifestFile: 
  * Detect which browsers have an Interceptor native messaging host manifest
  * installed in their per-user dir.
  */
-export function detectConfiguredBrowsers(): ("chrome" | "brave")[] {
-  return installedNmhManifests()
-    .map(m => m.browser)
-    .filter((b): b is "chrome" | "brave" => b === "chrome" || b === "brave")
+export function detectConfiguredBrowsers(): string[] {
+  return installedNmhManifests().map(m => m.browser)
+}
+
+/**
+ * Does the system default browser have an Interceptor native-messaging host?
+ *
+ * null when the default is unknown or nothing is configured — "unknown", not
+ * "mismatch". A mismatch is only worth reporting when both sides are known:
+ * URLs opened from other apps follow the OS default and bypass Interceptor,
+ * while `interceptor open` always lands in a configured browser.
+ */
+export function defaultBrowserMatchesConfigured(
+  configured: string[],
+  systemDefault: DefaultBrowser,
+): boolean | null {
+  if (!systemDefault || configured.length === 0) return null
+  return configured.includes(systemDefault)
 }
 
 /**
@@ -329,7 +420,10 @@ export function formatStatus(snap: StatusSnapshot, opts: { verbose?: boolean }):
     })) {
       lines.push(line)
     }
-  } else if (!IS_WIN) {
+  } else if (process.platform === "darwin") {
+    // Only advertised on macOS: `upgrade --full` installs the Swift bridge and
+    // hard-errors everywhere else, so printing it on Linux/Windows would send
+    // the user at a command that cannot succeed on their machine.
     lines.push("")
     lines.push("To enable native macOS control:    interceptor upgrade --full")
   }

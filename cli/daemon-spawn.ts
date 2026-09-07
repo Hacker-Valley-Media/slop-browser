@@ -4,7 +4,7 @@
 
 import { existsSync, readFileSync, unlinkSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
-import { IS_WIN, SOCKET_PATH, PID_PATH, LOCK_PATH, LOG_PATH, WS_PORT } from "../shared/platform"
+import { IS_WIN, SOCKET_PATH, PID_PATH, LOCK_PATH, LOG_PATH, WS_PORT, isProcessAlive } from "../shared/platform"
 import { decideDaemonRecovery, probeDaemonHealth } from "../shared/daemon-health"
 import { readLockFile } from "../daemon/lifecycle"
 import { assertNoInstallMaintenance } from "../shared/install-maintenance"
@@ -92,15 +92,17 @@ function readRuntimeReadiness(): { ready: boolean } {
       const pidContent = readFileSync(PID_PATH, "utf-8").trim()
       const pid = parseInt(pidContent.split("\n")[0])
       if (!isNaN(pid)) {
-        try {
-          process.kill(pid, 0)
+        // isProcessAlive, não kill(pid, 0): um pid file velho + um daemon zumbi
+        // (container sem init reaper) leria como "já rodando" e todo comando
+        // travaria num socket morto (port Linux, docs/linux-port-report.md §3.5).
+        if (isProcessAlive(pid)) {
           if (IS_WIN) {
             const lock = readLockFile(LOCK_PATH)
             ready = !!lock && lock.pid === pid && lock.wsPort === WS_PORT && lock.shutdownProtocolVersion === 1
           } else {
             ready = existsSync(SOCKET_PATH)
           }
-        } catch { ready = false }
+        } else { ready = false }
       }
     } catch {}
   }

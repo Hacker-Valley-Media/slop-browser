@@ -15,14 +15,21 @@ export async function setKeepAwake(
   on: boolean,
   level: KeepAwakeLevel = "system"
 ): Promise<{ on: boolean; level?: KeepAwakeLevel }> {
+  // chrome.power is Chromium-only. Without this check the Gecko build reports
+  // "can't access property requestKeepAwake, chrome.power is undefined" — a raw
+  // TypeError that reads like a bug rather than an absent capability.
+  const power = (chrome as unknown as { power?: typeof chrome.power }).power
+  if (typeof power?.requestKeepAwake !== "function") {
+    throw new Error("keepawake is unavailable — this browser has no power API (Chromium-only)")
+  }
   if (on) {
     // "system" keeps the CPU awake but lets the display sleep overnight;
     // "display" keeps the screen on too.
-    chrome.power.requestKeepAwake(level)
+    power.requestKeepAwake(level)
     await chrome.storage.local.set({ [KEEPAWAKE_STORAGE_KEY]: { on: true, level } })
     return { on: true, level }
   }
-  chrome.power.releaseKeepAwake()
+  power.releaseKeepAwake()
   await chrome.storage.local.set({ [KEEPAWAKE_STORAGE_KEY]: { on: false } })
   return { on: false }
 }

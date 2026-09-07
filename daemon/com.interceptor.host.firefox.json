@@ -1,0 +1,9 @@
+{
+  "name": "com.interceptor.host",
+  "description": "Interceptor daemon bridge",
+  "path": "__DAEMON_PATH__",
+  "type": "stdio",
+  "allowed_extensions": [
+    "interceptor@hackervalley.media"
+  ]
+}

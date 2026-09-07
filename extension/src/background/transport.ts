@@ -33,6 +33,12 @@ let configuredContextId: string | null = null
 let forceWebSocketTransport = false
 let WebSocketImpl = globalThis.WebSocket
 let safariNativeRelayEnabled = false
+// null = not yet known on this service-worker generation. MV3 tears the worker
+// down on idle and module state dies with it, so the daemon's answer is also
+// persisted (see OS_INPUT_STORAGE_KEY) and rehydrated on demand — otherwise the
+// first click after every wake would escalate again on a host that cannot.
+let osInputAvailable: boolean | null = null
+export const OS_INPUT_STORAGE_KEY = "interceptor_os_input"
 let safariNativeRelayClient: SafariNativeRelayClient | null = null
 export const NATIVE_KEEPALIVE_PONG_TIMEOUT_MS = 15_000
 export const RECENT_NATIVE_ACTIVITY_GRACE_MS = 10_000
@@ -46,6 +52,14 @@ export type ExtensionTransportConfig = {
   contextId?: string
   forceWebSocket?: boolean
   safariNativeRelay?: boolean
+  /**
+   * Can this build reach an OS-level input lane at all? Chromium builds can
+   * (the daemon posts CGEvents on macOS) and Safari can (the containing appex
+   * routes to `interceptor macos`). The Gecko build cannot on any host, so it
+   * sets this false and the router stops escalating clicks it can never land.
+   * Defaults true — a build must opt out explicitly.
+   */
+  osInputAvailable?: boolean
   /** Test/host injection; production entrypoints use the runtime WebSocket. */
   webSocketImpl?: typeof WebSocket
 }
@@ -57,7 +71,43 @@ export function configureTransport(config: ExtensionTransportConfig): void {
   }
   forceWebSocketTransport = config.forceWebSocket === true
   safariNativeRelayEnabled = config.safariNativeRelay === true
+  // An entrypoint that hard-disables the lane (the Gecko build) is authoritative
+  // and re-applies on every worker start; anything else waits for the daemon.
+  osInputAvailable = config.osInputAvailable === false ? false : null
   if (config.webSocketImpl) WebSocketImpl = config.webSocketImpl
+}
+
+/**
+ * Whether this build + host pair has any OS-level input lane to escalate into.
+ *
+ * Unknown resolves to true — the historical behavior — so a daemon too old to
+ * report the flag keeps working exactly as before.
+ */
+export async function isOsInputAvailable(): Promise<boolean> {
+  if (osInputAvailable !== null) return osInputAvailable
+  try {
+    const stored = (await chrome.storage.local.get(OS_INPUT_STORAGE_KEY))[OS_INPUT_STORAGE_KEY]
+    if (typeof stored === "boolean") {
+      osInputAvailable = stored
+      return stored
+    }
+  } catch {}
+  return true
+}
+
+/** Record the daemon's answer for this worker generation and the next. */
+function rememberOsInputAvailability(reported: boolean): void {
+  // A build that disabled the lane outright stays disabled: a browser with no
+  // OS-input API cannot use one just because the host happens to have it.
+  const next = osInputAvailable === false ? false : reported
+  osInputAvailable = next
+  try {
+    const storage = (chrome as unknown as { storage?: { local?: { set?: (items: Record<string, unknown>) => unknown } } }).storage
+    const result = storage?.local?.set?.({ [OS_INPUT_STORAGE_KEY]: next })
+    if (result && typeof (result as Promise<void>).catch === "function") {
+      ;(result as Promise<void>).catch(() => {})
+    }
+  } catch {}
 }
 
 /** Restore injected entrypoint configuration between tests. */
@@ -82,6 +132,7 @@ export function resetTransportForTesting(): void {
   safariNativeRelayClient = null
   if (activeTransport === "websocket" || activeTransport === "safari-native") activeTransport = "none"
   configuredContextId = null
+  osInputAvailable = null
   forceWebSocketTransport = false
   safariNativeRelayEnabled = false
   WebSocketImpl = globalThis.WebSocket
@@ -377,6 +428,12 @@ function handleControlPlaneMessage(
     return
   }
   if (controlType === "context_registered") {
+    // Adopt the daemon's answer about ITS host. Absent (older daemon) leaves the
+    // entrypoint default in place; an entrypoint that hard-disabled the lane
+    // (the Gecko build) stays disabled — a browser with no OS-input API cannot
+    // use one just because the host has it.
+    const reported = (msg as { osInput?: unknown }).osInput
+    if (typeof reported === "boolean") rememberOsInputAvailability(reported)
     if (transport === "websocket") {
       markWsRegistered()
     } else {

@@ -1,8 +1,33 @@
 type ActionResult = { success: boolean; error?: string; data?: unknown; tabId?: number }
 
+/**
+ * Gecko surfaces most bookmarks failures as the bare string "An unexpected
+ * error occurred", which tells the caller nothing about whether the API is
+ * missing, unpermitted, or genuinely failing. Name the browser-side condition
+ * we can actually check — API presence — and pass the original text through.
+ */
+function bookmarksError(err: unknown): ActionResult {
+  const api = (chrome as unknown as { bookmarks?: unknown }).bookmarks
+  const detail = err instanceof Error ? err.message : String(err)
+  if (!api) {
+    return { success: false, error: "this browser does not expose a bookmarks API" }
+  }
+  return { success: false, error: `bookmarks call failed: ${detail}` }
+}
+
 export async function handleBookmarkActions(
   action: { type: string; [key: string]: unknown },
   _tabId: number
+): Promise<ActionResult> {
+  try {
+    return await dispatchBookmarkAction(action)
+  } catch (err) {
+    return bookmarksError(err)
+  }
+}
+
+async function dispatchBookmarkAction(
+  action: { type: string; [key: string]: unknown }
 ): Promise<ActionResult> {
   switch (action.type) {
     case "bookmark_tree": {

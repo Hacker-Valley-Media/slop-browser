@@ -19,6 +19,7 @@ import {
 } from "../shared/monitor-artifacts"
 import { chooseOutboundTransport, isRelayPing, relaySlotAfterClose, validateContextRouting } from "./outbound-routing"
 import { claimContextId, describeContexts, type ContextSocket } from "./context-registration"
+import { osInputSupported } from "../shared/platform"
 import { failPendingBridgeRequests, formatBridgeUnavailableError, getBridgeRecoveryActions, getBridgeRecoveryLayout } from "./bridge-recovery"
 import { socketWriteAll, drainSocketQueue, releaseSocketQueue } from "./socket-write"
 import { captureSpinSample, spinWatchdogStep, SPIN_EXIT_TICKS, type SpinWatchdogState } from "./spin-watchdog"
@@ -2053,7 +2054,7 @@ function startWsServer(): ReturnType<typeof Bun.serve> {
 
         if (request.type === "extension") {
           const ctxId = request.contextId ?? "default"
-          const claim = claimContextId(extensionWsMap, ws as ContextSocket, ctxId)
+          const claim = claimContextId(extensionWsMap, ws as ContextSocket, ctxId, osInputSupported())
           ws.send(JSON.stringify(claim.message))
           if (claim.status === "conflict") {
             return
@@ -2072,7 +2073,7 @@ function startWsServer(): ReturnType<typeof Bun.serve> {
         if (request.type === NATIVE_REGISTER_TYPE) {
           const r = request as { contextId?: string; pid?: number; slice?: string; appName?: string; frameworks?: string[]; wayIn?: string }
           const ctxId = r.contextId && r.contextId.startsWith(NATIVE_CONTEXT_PREFIX) ? r.contextId : NATIVE_CONTEXT_PREFIX + (r.contextId ?? "app")
-          const claim = claimContextId(extensionWsMap, ws as ContextSocket, ctxId)
+          const claim = claimContextId(extensionWsMap, ws as ContextSocket, ctxId, osInputSupported())
           ws.send(JSON.stringify(claim.message))
           if (claim.status === "conflict") {
             return

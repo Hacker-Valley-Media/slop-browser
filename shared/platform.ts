@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs"
+
 export type PlatformName = "win32" | "darwin" | string
 
 export type PlatformConfig = {
@@ -49,6 +51,57 @@ export const EVENTS_PATH = current.eventsPath
 export const MONITOR_SESSIONS_DIR = current.monitorSessionsDir
 export const MAINTENANCE_GUARD_PATH = current.maintenanceGuardPath
 export const EVENTS_MAX_SIZE = 10 * 1024 * 1024
+
+/**
+ * Is `pid` a live process — counting a zombie as dead?
+ *
+ * `process.kill(pid, 0)` is the usual liveness probe, but it succeeds for a
+ * zombie: an exited child whose parent has not reaped it still owns its PID and
+ * still accepts signal 0. That matters on Linux specifically, because the daemon
+ * is spawned detached and gets reparented to PID 1 — and in a container PID 1 is
+ * frequently the app's own entrypoint rather than an init that reaps (plain
+ * `docker run` without `--init`, most CI containers, many Kubernetes pods). There
+ * the exited daemon stays a zombie forever, so a bare kill(pid, 0) reports a
+ * daemon that is long gone as running: `interceptor daemon stop` then waits out
+ * its whole timeout and exits non-zero on a daemon it successfully stopped.
+ *
+ * Linux exposes the real answer in /proc/<pid>/stat field 3 (state); "Z" is a
+ * zombie. Read that when /proc is available and fall back to the signal probe
+ * everywhere else (macOS has no /proc, and its launchd always reaps).
+ */
+export function isProcessAlive(pid: number, readStat: (path: string) => string = (p) => readFileSync(p, "utf-8")): boolean {
+  try {
+    process.kill(pid, 0)
+  } catch {
+    return false
+  }
+  if (process.platform !== "linux") return true
+  try {
+    const stat = readStat(`/proc/${pid}/stat`)
+    // comm (field 2) is parenthesized and may itself contain spaces/parens, so
+    // split after the LAST ')' — state is the first token after it.
+    const afterComm = stat.slice(stat.lastIndexOf(")") + 1).trim()
+    const state = afterComm.split(/\s+/)[0]
+    return state !== "Z"
+  } catch {
+    // No /proc entry (already reaped, or /proc not mounted): trust the signal probe.
+    return true
+  }
+}
+
+/**
+ * Does this host have an OS-level trusted-input backend?
+ *
+ * Only macOS does: daemon/os-input.ts drives CoreGraphics CGEvents, and both
+ * the Windows stub (daemon/os-input-win.ts) and the non-Darwin branch of
+ * os-input.ts return an explicit "not supported" sentinel. The extension
+ * reports this layer as available whenever a daemon is connected — it has no
+ * way to see the host OS — so the CLI corrects the answer for `capabilities`
+ * rather than letting an agent plan around a layer that cannot fire here.
+ */
+export function osInputSupported(platform: PlatformName = process.platform): boolean {
+  return platform === "darwin"
+}
 
 // File-upload transport sizing. The `upload` verb ships file bytes
 // base64-encoded inside the command JSON. Three limits gate the path:

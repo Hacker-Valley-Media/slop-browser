@@ -11,7 +11,8 @@ import { parseElementTarget } from "../parse"
 import {
   readStatusSnapshot,
   detectConfiguredBrowsers,
-  detectMacOSDefaultBrowser,
+  detectSystemDefaultBrowser,
+  defaultBrowserMatchesConfigured,
   formatStatus,
   snapshotToJson,
   type StatusSnapshot,
@@ -56,20 +57,18 @@ export async function parseMetaCommand(filtered: string[], jsonMode = false, con
       const verbose = filtered.includes("--verbose") || filtered.includes("--explain") || filtered.includes("-v")
       const snap: StatusSnapshot = readStatusSnapshot()
 
-      // Browser-config block (#52) — verbose-only, macOS-only.
-      if (verbose && process.platform === "darwin") {
+      // Browser-config block (#52) — verbose-only. Renders wherever native
+      // messaging hosts live on disk and a system default browser is
+      // discoverable: macOS (Application Support + LaunchServices) and Linux
+      // (XDG config home + xdg-settings). Windows keeps hosts in the registry,
+      // so there is nothing to scan there.
+      if (verbose && (process.platform === "darwin" || process.platform === "linux")) {
         const configured = detectConfiguredBrowsers()
-        const sysDefault = detectMacOSDefaultBrowser()
-        let matches: boolean | null = null
-        if (sysDefault && configured.length > 0) {
-          matches = configured.some(b => b === sysDefault) || (sysDefault === "chrome" || sysDefault === "brave")
-            ? configured.includes(sysDefault as "chrome" | "brave")
-            : false
-        }
+        const sysDefault = detectSystemDefaultBrowser()
         snap.browser = {
           configured,
           systemDefault: sysDefault,
-          matches,
+          matches: defaultBrowserMatchesConfigured(configured, sysDefault),
         }
       }
 

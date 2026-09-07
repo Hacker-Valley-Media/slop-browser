@@ -1,4 +1,4 @@
-import { activeTransport } from "../transport"
+import { activeTransport, isOsInputAvailable } from "../transport"
 import { debuggerAttached, cdpAttachActDetach } from "../cdp"
 import { resolveTabLifecycle } from "../tab-lifecycle"
 
@@ -52,7 +52,10 @@ export async function handleMetaActions(
         success: true,
         data: {
           layers: {
-            os_input: daemonConnected,
+            // Report the value the router will actually consult, not just
+            // "a daemon is connected": on a host with no OS-input backend the
+            // daemon says so at registration and every escalation is skipped.
+            os_input: daemonConnected && await isOsInputAvailable(),
             tabCapture: true,
             cdp_debugger: hasDebugger,
             debugger_active: debuggerActive

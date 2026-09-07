@@ -12,6 +12,44 @@ function socket(sent: string[] = []): ContextSocket {
   }
 }
 
+describe("registration ack — host OS-input capability", () => {
+  // The extension cannot see the host OS from a service worker, so the daemon
+  // reports it here. Without the flag the extension assumes an OS-input lane
+  // exists and escalates clicks into it; on Linux/Windows that escalation
+  // always fails and reports a click that DID land as a total failure.
+  test("omits osInput entirely when the daemon does not report it", () => {
+    const message = contextRegisteredMessage("work")
+    expect(message).toEqual({ type: "context_registered", contextId: "work" })
+    expect("osInput" in message).toBe(false)
+  })
+
+  test("carries osInput:false for a host with no OS-input backend", () => {
+    expect(contextRegisteredMessage("work", false)).toEqual({
+      type: "context_registered",
+      contextId: "work",
+      osInput: false,
+    })
+  })
+
+  test("carries osInput:true on a host that has one", () => {
+    expect(contextRegisteredMessage("work", true)).toEqual({
+      type: "context_registered",
+      contextId: "work",
+      osInput: true,
+    })
+  })
+
+  test("claimContextId forwards the flag into the ack it hands the socket", () => {
+    const map = new Map<string, ContextSocket>()
+    const result = claimContextId(map, socket(), "work", false)
+    expect(result.message).toEqual({
+      type: "context_registered",
+      contextId: "work",
+      osInput: false,
+    })
+  })
+})
+
 describe("context name uniqueness guard", () => {
   test("allows first registration", () => {
     const map = new Map<string, ContextSocket>()

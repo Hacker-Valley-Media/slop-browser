@@ -11,7 +11,9 @@ type ChromeLike = {
 }
 
 export type ContextRegistrationControl =
-  | { type: "context_registered"; contextId?: unknown }
+  // osInput: the daemon telling us whether ITS host can deliver OS-level
+  // trusted input. Only macOS can; a service worker cannot see the host OS.
+  | { type: "context_registered"; contextId?: unknown; osInput?: unknown }
   | { type: "context_conflict"; contextId?: unknown; error?: unknown }
 
 export function registrationControlType(msg: unknown): ContextRegistrationControl["type"] | null {

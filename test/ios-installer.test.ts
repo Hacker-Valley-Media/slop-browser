@@ -4,6 +4,7 @@ import {
   installProxyInstallRequest, encodeInstallProxyFrame, tryReadInstallProxyFrame,
 } from "../daemon/ios/installer"
 import { plistToObject } from "../daemon/ios/lockdown"
+import { HAS_PLUTIL } from "./helpers/macos-tools"
 
 // Locks the AFC header (magic + 4×u64 LE) and the installation_proxy request
 // framing (shared 4-byte-BE + plist with lockdown).
@@ -24,7 +25,9 @@ describe("AFC header codec", () => {
   })
 })
 
-describe("installation_proxy request", () => {
+// Asserting the request body means parsing it back with plistToObject,
+// which shells out to /usr/bin/plutil.
+describe.skipIf(!HAS_PLUTIL)("installation_proxy request", () => {
   test("Install carries PackageType Developer + the bundle id", () => {
     const req = installProxyInstallRequest("PublicStaging/Runner.app", "com.interceptor.InterceptorRunner.xctrunner")
     const frame = encodeInstallProxyFrame(req)

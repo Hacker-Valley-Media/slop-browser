@@ -15,8 +15,64 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  linux:
+    name: linux — typecheck + tests + linux-x64 build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - name: Shell syntax check (scripts/*.sh)
+        run: |
+          for f in scripts/*.sh; do
+            echo "bash -n $f"
+            bash -n "$f"
+          done
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      # Suites that shell out to base-macOS tools (plutil, security) skip
+      # themselves here; anything else failing is a real portability break.
+      - name: TypeScript tests
+        run: bun test
+
+      # Proves the Linux artifacts still compile and stage. The runner has
+      # Chrome and Firefox preinstalled, so install.sh's browser detection and
+      # native-messaging paths are exercised for real rather than skipped.
+      - name: Build linux-x64 package
+        run: bash scripts/build.sh --target=linux-x64
+
+      - name: Smoke — CLI and daemon run
+        run: |
+          ./dist/linux/x64/interceptor --version
+          ./dist/linux/x64/daemon/interceptor-daemon --standalone &
+          for i in $(seq 1 20); do [ -S /tmp/interceptor.sock ] && break; sleep 0.25; done
+          ./dist/linux/x64/interceptor status
+          ./dist/linux/x64/interceptor daemon stop
+
+      - name: Smoke — install.sh dry-run for every Linux browser target
+        run: |
+          for b in chrome chromium brave firefox; do
+            echo "--- --$b"
+            INSTALL_DRY_RUN=1 bash scripts/install.sh --browser-only "--$b" --skip-extension
+          done
+
+      - name: Package linux-x64 (tar.gz + deb)
+        run: |
+          bash scripts/package-linux.sh --arch x64 --format tar.gz,deb
+          ls -la dist/linux/packages
+
   test:
-    name: typecheck + tests + capability-blind audit
+    name: macos — typecheck + tests + capability-blind audit
     runs-on: macos-15
     steps:
       - name: Checkout

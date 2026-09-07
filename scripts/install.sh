@@ -4,9 +4,25 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DAEMON_PATH="$ROOT/daemon/interceptor-daemon"
 TEMPLATE_PATH="$ROOT/daemon/com.interceptor.host.json"
-GENERATED_DIR="$ROOT/daemon/.generated"
+# Where the resolved native-messaging manifest is written. A dev checkout keeps
+# it next to the daemon; a system-wide install (deb/rpm under /opt) cannot —
+# the prefix is root-owned and the manifest is per-user state anyway, since it
+# is what the per-user NativeMessagingHosts symlink points at. Fall back to the
+# XDG state home, the same root shared/monitor-tasks.ts already uses on Linux.
+if [[ -w "$ROOT/daemon" ]] || [[ ! -e "$ROOT/daemon" && -w "$ROOT" ]]; then
+  GENERATED_DIR="$ROOT/daemon/.generated"
+else
+  GENERATED_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/interceptor"
+fi
 GENERATED_MANIFEST="$GENERATED_DIR/com.interceptor.host.json"
 EXTENSION_DIR="$ROOT/extension/dist"
+# Gecko variants. Firefox keys native-messaging access on the add-on id
+# (allowed_extensions) rather than a chrome-extension:// origin, so it needs its
+# own manifest template — and its own extension build, since Gecko MV3 uses an
+# event page instead of a service worker. Both are selected in one place below.
+GECKO_TEMPLATE_PATH="$ROOT/daemon/com.interceptor.host.firefox.json"
+GECKO_GENERATED_MANIFEST="$GENERATED_DIR/com.interceptor.host.firefox.json"
+GECKO_EXTENSION_DIR="$ROOT/extension/dist-firefox"
 INSTALL_BRIDGE_SCRIPT="$ROOT/scripts/install-bridge.sh"
 
 # ── Platform detection ────────────────────────────────────────────────────────
@@ -36,6 +52,12 @@ profile_root_for() {
     Darwin:vivaldi)            echo "$HOME/Library/Application Support/Vivaldi" ;;
     Linux:brave)               echo "$HOME/.config/BraveSoftware/Brave-Browser" ;;
     Linux:chrome)              echo "$HOME/.config/google-chrome" ;;
+    Linux:chromium)            echo "$HOME/.config/chromium" ;;
+    # Firefox has no Chromium "User Data" dir. Profiles live under
+    # ~/.mozilla/firefox/<salt>.<name> and are indexed by profiles.ini, so the
+    # Chromium-shaped --profile / --profiles handling does not apply; the
+    # callers below special-case it.
+    Linux:firefox)             echo "$HOME/.mozilla/firefox" ;;
     *) return 1 ;;
   esac
 }
@@ -58,6 +80,10 @@ nm_dir_for() {
     Darwin:vivaldi)            echo "$HOME/Library/Application Support/Vivaldi/NativeMessagingHosts" ;;
     Linux:brave)               echo "$HOME/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts" ;;
     Linux:chrome)              echo "$HOME/.config/google-chrome/NativeMessagingHosts" ;;
+    Linux:chromium)            echo "$HOME/.config/chromium/NativeMessagingHosts" ;;
+    # Gecko keeps native-messaging hosts in one per-user dir for every Firefox
+    # profile, outside the profile tree entirely.
+    Linux:firefox)             echo "$HOME/.mozilla/native-messaging-hosts" ;;
     *) return 1 ;;
   esac
 }
@@ -77,6 +103,10 @@ browser_installed() {
                   || command -v brave >/dev/null 2>&1 ) && echo 1 || echo 0 ;;
     Linux:chrome)   ( command -v google-chrome >/dev/null 2>&1 \
                   || command -v google-chrome-stable >/dev/null 2>&1 ) && echo 1 || echo 0 ;;
+    Linux:chromium) ( command -v chromium >/dev/null 2>&1 \
+                  || command -v chromium-browser >/dev/null 2>&1 ) && echo 1 || echo 0 ;;
+    Linux:firefox)  ( command -v firefox >/dev/null 2>&1 \
+                  || command -v firefox-esr >/dev/null 2>&1 ) && echo 1 || echo 0 ;;
     *) echo 0 ;;
   esac
 }
@@ -103,6 +133,16 @@ browser_bin_for() {
     Linux:chrome)
       if command -v google-chrome >/dev/null 2>&1; then echo google-chrome
       elif command -v google-chrome-stable >/dev/null 2>&1; then echo google-chrome-stable
+      else return 1; fi
+      ;;
+    Linux:chromium)
+      if command -v chromium >/dev/null 2>&1; then echo chromium
+      elif command -v chromium-browser >/dev/null 2>&1; then echo chromium-browser
+      else return 1; fi
+      ;;
+    Linux:firefox)
+      if command -v firefox >/dev/null 2>&1; then echo firefox
+      elif command -v firefox-esr >/dev/null 2>&1; then echo firefox-esr
       else return 1; fi
       ;;
     *) return 1 ;;
@@ -134,6 +174,10 @@ kill_browser() {
 
 # ── Parse flags ────────────────────────────────────────────────────────────────
 SKIP_EXTENSION=0
+# Linux tarball installs have no packaging step to put the CLI on PATH, so the
+# installer links it itself (off on macOS/Windows, where the pkg/Setup owns it).
+LINK_CLI=1
+LINK_CLI_DIR=""
 BROWSER=""
 PROFILE=""
 LIST_PROFILES=0
@@ -152,6 +196,14 @@ while [[ $i -le $# ]]; do
     --chrome-for-testing) BROWSER="chrome-for-testing" ;;
     --edge)               BROWSER="edge" ;;
     --vivaldi)            BROWSER="vivaldi" ;;
+    --chromium)           BROWSER="chromium" ;;
+    --firefox)            BROWSER="firefox" ;;
+    --no-link-cli)        LINK_CLI=0 ;;
+    --link-cli-dir)
+      i=$((i + 1))
+      LINK_CLI_DIR="${!i}"
+      ;;
+    --link-cli-dir=*)     LINK_CLI_DIR="${arg#--link-cli-dir=}" ;;
     --profile)
       i=$((i + 1))
       PROFILE="${!i}"
@@ -190,11 +242,15 @@ while [[ $i -le $# ]]; do
        echo "  --chrome-for-testing   Target Google Chrome for Testing (macOS only in this revision)"
        echo "  --edge                 Target Microsoft Edge (macOS only in this revision)"
        echo "  --vivaldi              Target Vivaldi (macOS only in this revision)"
+       echo "  --chromium             Target Chromium (Linux only in this revision)"
+       echo "  --firefox              Target Firefox (Linux only in this revision; Gecko build)"
        echo "  --profile <name>       Profile directory name (e.g. \"Default\", \"Profile 2\")"
        echo "  --profiles             List available profiles and exit"
        echo ""
        echo "Options:"
        echo "  --skip-extension  Only install native messaging (skip extension load)"
+       echo "  --no-link-cli     Do not symlink the interceptor CLI onto PATH (Linux)"
+       echo "  --link-cli-dir D  Symlink the CLI into D instead of ~/.local/bin (Linux)"
        echo "  --dry-run         Print steps without executing them"
        exit 1 ;;
   esac
@@ -212,7 +268,16 @@ if [[ "$LIST_PROFILES" == "1" ]]; then
     elif [[ "$(browser_installed chrome-for-testing)" == "1" ]]; then BROWSER="chrome-for-testing"
     elif [[ "$(browser_installed edge)"               == "1" ]]; then BROWSER="edge"
     elif [[ "$(browser_installed vivaldi)"            == "1" ]]; then BROWSER="vivaldi"
+    elif [[ "$(browser_installed chromium)"           == "1" ]]; then BROWSER="chromium"
     fi
+  fi
+  if [[ "$BROWSER" == "firefox" ]]; then
+    echo "Firefox does not use Chromium's profile-directory layout."
+    echo "Its profiles are indexed by $HOME/.mozilla/firefox/profiles.ini and are"
+    echo "selected with 'firefox -P'. Interceptor's native-messaging host is"
+    echo "registered once per user ($HOME/.mozilla/native-messaging-hosts) and"
+    echo "applies to every profile, so --profile is not needed."
+    exit 0
   fi
   PROFILE_ROOT="$(profile_root_for "$BROWSER" || true)"
   if [[ -z "$PROFILE_ROOT" ]]; then echo "No supported browser found."; exit 1; fi
@@ -300,13 +365,17 @@ if [[ -z "$BROWSER" ]]; then
   BRAVE_INSTALLED=$(browser_installed brave)
   EDGE_INSTALLED=$(browser_installed edge)
   VIVALDI_INSTALLED=$(browser_installed vivaldi)
+  CHROMIUM_INSTALLED=$(browser_installed chromium)
+  FIREFOX_INSTALLED=$(browser_installed firefox)
   TOTAL_INSTALLED=$(( CHROME_INSTALLED + CHROME_BETA_INSTALLED + CHROME_CANARY_INSTALLED \
                     + CHROME_DEV_INSTALLED + CHROME_FOR_TESTING_INSTALLED \
-                    + BRAVE_INSTALLED + EDGE_INSTALLED + VIVALDI_INSTALLED ))
+                    + BRAVE_INSTALLED + EDGE_INSTALLED + VIVALDI_INSTALLED \
+                    + CHROMIUM_INSTALLED + FIREFOX_INSTALLED ))
 
   if (( TOTAL_INSTALLED == 0 )); then
     echo "ERROR: No supported browser found." >&2
-    echo "       Install Chrome (stable/Beta/Canary/Dev/for-Testing), Brave, Edge, or Vivaldi, then re-run." >&2
+    echo "       Install Chrome (stable/Beta/Canary/Dev/for-Testing), Brave, Edge, Vivaldi," >&2
+    echo "       Chromium, or Firefox, then re-run." >&2
     exit 1
   fi
 
@@ -320,7 +389,9 @@ if [[ -z "$BROWSER" ]]; then
   elif [[ "$CHROME_FOR_TESTING_INSTALLED" == "1" ]]; then DEFAULT_BROWSER="chrome-for-testing"
   elif [[ "$BRAVE_INSTALLED"              == "1" ]]; then DEFAULT_BROWSER="brave"
   elif [[ "$EDGE_INSTALLED"               == "1" ]]; then DEFAULT_BROWSER="edge"
-  else                                                    DEFAULT_BROWSER="vivaldi"
+  elif [[ "$VIVALDI_INSTALLED"            == "1" ]]; then DEFAULT_BROWSER="vivaldi"
+  elif [[ "$CHROMIUM_INSTALLED"           == "1" ]]; then DEFAULT_BROWSER="chromium"
+  else                                                    DEFAULT_BROWSER="firefox"
   fi
 
   if (( TOTAL_INSTALLED == 1 )); then
@@ -340,12 +411,14 @@ if [[ -z "$BROWSER" ]]; then
     [[ "$BRAVE_INSTALLED"              == "1" ]] && echo "  brave               Brave Browser"
     [[ "$EDGE_INSTALLED"               == "1" ]] && echo "  edge                Microsoft Edge"
     [[ "$VIVALDI_INSTALLED"            == "1" ]] && echo "  vivaldi             Vivaldi"
+    [[ "$CHROMIUM_INSTALLED"           == "1" ]] && echo "  chromium            Chromium"
+    [[ "$FIREFOX_INSTALLED"            == "1" ]] && echo "  firefox             Firefox (Gecko build)"
     [[ "$CHROME_INSTALLED" == "1" && "$BRAVE_INSTALLED" == "1" ]] && echo "  both                Chrome (stable) and Brave"
     echo ""
     read -r -p "Browser (default: $DEFAULT_BROWSER): " ANSWER
     ANSWER="${ANSWER:-$DEFAULT_BROWSER}"
     case "$ANSWER" in
-      chrome|chrome-beta|chrome-canary|chrome-dev|chrome-for-testing|brave|edge|vivaldi|both) BROWSER="$ANSWER" ;;
+      chrome|chrome-beta|chrome-canary|chrome-dev|chrome-for-testing|brave|edge|vivaldi|chromium|firefox|both) BROWSER="$ANSWER" ;;
       *)
         echo "Unrecognized browser '$ANSWER'." >&2
         exit 1 ;;
@@ -354,6 +427,17 @@ if [[ -z "$BROWSER" ]]; then
 fi
 
 echo "==> Browser: $BROWSER"
+
+# Firefox is the one non-Chromium target: different native-host manifest shape,
+# different extension build, no --load-extension, no Chromium profile layout.
+# Resolve all of that here so the steps below stay single-branch.
+IS_GECKO=0
+if [[ "$BROWSER" == "firefox" ]]; then
+  IS_GECKO=1
+  TEMPLATE_PATH="$GECKO_TEMPLATE_PATH"
+  GENERATED_MANIFEST="$GECKO_GENERATED_MANIFEST"
+  EXTENSION_DIR="$GECKO_EXTENSION_DIR"
+fi
 
 # Helper that runs a step or prints it under --dry-run.
 run_step() {
@@ -395,6 +479,8 @@ case "$BROWSER" in
   brave)              NM_DIRS+=("$(nm_dir_for brave)") ;;
   edge)               NM_DIRS+=("$(nm_dir_for edge)") ;;
   vivaldi)            NM_DIRS+=("$(nm_dir_for vivaldi)") ;;
+  chromium)           NM_DIRS+=("$(nm_dir_for chromium)") ;;
+  firefox)            NM_DIRS+=("$(nm_dir_for firefox)") ;;
   both)
     NM_DIRS+=("$(nm_dir_for chrome)")
     NM_DIRS+=("$(nm_dir_for brave)")
@@ -420,6 +506,8 @@ for dir in "${NM_DIRS[@]}"; do
       *Brave-Browser*|*BraveSoftware*)   echo "    Brave:              $dir/com.interceptor.host.json" ;;
       *Microsoft\ Edge*)                 echo "    Edge:               $dir/com.interceptor.host.json" ;;
       *Vivaldi*)                         echo "    Vivaldi:            $dir/com.interceptor.host.json" ;;
+      *native-messaging-hosts*)          echo "    Firefox:            $dir/com.interceptor.host.json" ;;
+      *chromium*|*Chromium*)             echo "    Chromium:           $dir/com.interceptor.host.json" ;;
     esac
   fi
 done
@@ -467,10 +555,24 @@ os.replace(tmp, path)
 PY
 }
 
+# Locate the interceptor CLI for the post-launch probe. Two layouts ship this
+# script: a repo checkout (binary under $ROOT/dist/) and an extracted release
+# package (binary at $ROOT, with daemon/, extension/, skills/ beside it — the
+# layout `interceptor skills adopt` resolves packs from). Fall back to $PATH for
+# an already-installed CLI. Echoes nothing when none is found.
+resolve_interceptor_bin() {
+  local candidate
+  for candidate in "$ROOT/dist/interceptor" "$ROOT/interceptor"; do
+    if [[ -x "$candidate" ]]; then echo "$candidate"; return 0; fi
+  done
+  if command -v interceptor >/dev/null 2>&1; then command -v interceptor; return 0; fi
+  return 1
+}
+
 # Probe whether the just-launched extension is reachable. Returns 0 if yes.
 probe_extension_reachable() {
-  local interceptor_bin="$ROOT/dist/interceptor"
-  [[ -x "$interceptor_bin" ]] || return 0  # nothing to probe with; skip silently
+  local interceptor_bin
+  interceptor_bin="$(resolve_interceptor_bin)" || return 0  # nothing to probe with; skip silently
   # status --verbose ends with a per-component breakdown including "extension:"
   "$interceptor_bin" status --verbose 2>/dev/null | grep -qE "^extension:[[:space:]]+reachable"
 }
@@ -501,10 +603,40 @@ load_extension() {
     chrome-for-testing) BROWSER_NAME="Chrome for Testing" ;;
     edge)               BROWSER_NAME="Edge" ;;
     vivaldi)            BROWSER_NAME="Vivaldi" ;;
+    chromium)           BROWSER_NAME="Chromium" ;;
+    firefox)            BROWSER_NAME="Firefox" ;;
     *)
       echo "ERROR: load_extension called with unknown browser '$target'." >&2
       return 1 ;;
   esac
+
+  # ── Gecko ───────────────────────────────────────────────────────────────────
+  # Firefox has no --load-extension switch and no Chromium developer-mode flag,
+  # so none of the Chromium preflight below applies. An unsigned MV3 add-on can
+  # be loaded two ways: temporarily via about:debugging (survives until the
+  # browser quits, works on release Firefox), or permanently from a signed XPI.
+  # Print the path and stop — silently launching Firefox would do nothing.
+  if [[ "$target" == "firefox" ]]; then
+    echo ""
+    if [[ "$DRY_RUN" == "1" ]]; then
+      echo "==> [browser] DRY: would print Firefox load instructions for $EXTENSION_DIR"
+      return 0
+    fi
+    echo "==> Firefox loads unpacked add-ons through about:debugging, not a command-line switch."
+    echo "    Native messaging metadata has already been installed."
+    echo ""
+    echo "    Load it (per browser session):"
+    echo "      1. Open about:debugging#/runtime/this-firefox"
+    echo "      2. Click 'Load Temporary Add-on…'"
+    echo "      3. Select $EXTENSION_DIR/manifest.json"
+    echo ""
+    echo "    Grant host access (Firefox MV3 treats host permissions as optional):"
+    echo "      about:addons -> Interceptor -> Permissions -> 'Access your data for all websites'"
+    echo ""
+    echo "    Verify with: interceptor status --verbose   (expect 'extension: reachable')"
+    echo "    A signed XPI installs permanently; temporary add-ons are dropped on quit."
+    return 0
+  fi
   if [[ "$PLATFORM" == "Darwin" ]]; then
     case "$target" in
       brave)
@@ -544,8 +676,16 @@ load_extension() {
     BROWSER_APP=""
     BROWSER_BIN="$(browser_bin_for "$target" || true)"
     if [[ -z "$BROWSER_BIN" ]]; then
-      echo "ERROR: $BROWSER_NAME binary not found in PATH on this platform." >&2
-      return 1
+      # A dry run reports the steps it *would* take; it must not depend on the
+      # browser actually being installed. The Darwin branch above never probes
+      # the filesystem either (it just names the .app), so failing here would
+      # make --dry-run behave differently on Linux than on macOS for no reason.
+      if [[ "$DRY_RUN" == "1" ]]; then
+        BROWSER_BIN="$target"
+      else
+        echo "ERROR: $BROWSER_NAME binary not found in PATH on this platform." >&2
+        return 1
+      fi
     fi
   fi
 
@@ -739,8 +879,68 @@ load_extension() {
   fi
 }
 
+# ── Step 3b: put the CLI on PATH (Linux) ──────────────────────────────────────
+# macOS installs come from a pkg that writes /usr/local/bin, and Windows Setup
+# edits PATH; a Linux tarball has neither, so without this the CLI only works by
+# absolute path. Symlink, never copy: an upgrade replaces the target in place.
+link_cli_onto_path() {
+  [[ "$PLATFORM" == "Linux" ]] || return 0
+  [[ "$LINK_CLI" == "1" ]] || return 0
+
+  local cli_bin link_dir link_path
+  cli_bin="$(resolve_interceptor_bin || true)"
+  if [[ -z "$cli_bin" ]]; then
+    echo "==> [cli] Skipping PATH link — no interceptor binary found next to this script."
+    return 0
+  fi
+  # An `interceptor` already on PATH that resolves to this same binary is the
+  # steady state after the first install; re-linking it would be noise.
+  if command -v interceptor >/dev/null 2>&1; then
+    local existing
+    existing="$(command -v interceptor)"
+    if [[ "$(readlink -f "$existing" 2>/dev/null || echo "$existing")" == "$(readlink -f "$cli_bin" 2>/dev/null || echo "$cli_bin")" ]]; then
+      echo "==> [cli] Already on PATH: $existing"
+      return 0
+    fi
+  fi
+
+  link_dir="${LINK_CLI_DIR:-$HOME/.local/bin}"
+  link_path="$link_dir/interceptor"
+
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "==> [cli] DRY: mkdir -p $link_dir"
+    echo "==> [cli] DRY: ln -sfn $cli_bin $link_path"
+    return 0
+  fi
+
+  # Refuse to clobber a real file: a symlink is ours to replace, anything else
+  # belongs to the user or another package manager.
+  if [[ -e "$link_path" && ! -L "$link_path" ]]; then
+    echo "==> [cli] NOT linking — $link_path exists and is not a symlink."
+    echo "    Remove it or pass --link-cli-dir <dir> to place the link elsewhere."
+    return 0
+  fi
+
+  mkdir -p "$link_dir"
+  ln -sfn "$cli_bin" "$link_path"
+  # Record where the link went so uninstall removes exactly this one. Without
+  # the record, uninstall can only guess at the conventional dirs and would
+  # leave a --link-cli-dir link behind.
+  mkdir -p "$GENERATED_DIR"
+  printf '%s\n' "$link_path" > "$GENERATED_DIR/cli-link"
+  echo "==> [cli] Linked: $link_path -> $cli_bin"
+  case ":$PATH:" in
+    *":$link_dir:"*) ;;
+    *)
+      echo "    NOTE: $link_dir is not on your PATH. Add it, e.g.:"
+      echo "      echo 'export PATH=\"$link_dir:\$PATH\"' >> ~/.bashrc && exec \$SHELL" ;;
+  esac
+}
+
+link_cli_onto_path
+
 case "$BROWSER" in
-  chrome|chrome-beta|chrome-canary|chrome-dev|chrome-for-testing|brave|edge|vivaldi)
+  chrome|chrome-beta|chrome-canary|chrome-dev|chrome-for-testing|brave|edge|vivaldi|chromium|firefox)
     load_extension "$BROWSER" ;;
   both)
     load_extension chrome
@@ -755,8 +955,12 @@ if [[ "$MODE" == "browser-only" ]]; then
   echo "==> Done. Installed in browser-only mode."
   echo "    No macOS bridge installed; no LaunchAgent written."
   echo "    Test:    interceptor status   (expect 'mode: browser-only')"
-  echo ""
-  echo "    To upgrade later:    interceptor upgrade --full"
+  # `upgrade --full` installs the Swift bridge and hard-errors off macOS, so
+  # only advertise it where it can actually run.
+  if [[ "$PLATFORM" == "Darwin" ]]; then
+    echo ""
+    echo "    To upgrade later:    interceptor upgrade --full"
+  fi
   exit 0
 fi
 

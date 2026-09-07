@@ -238,6 +238,86 @@ fs.writeFileSync("extension/dist-safari/manifest.json", JSON.stringify(manifest,
   chmod -R u+rwX,go+rX extension/dist-safari/icons 2>/dev/null || true
 }
 
+build_extension_firefox() {
+  # Firefox / Gecko WebExtension (MV3). Third retarget of the same src tree:
+  # event-page background (background-firefox), content/inject scripts reused
+  # verbatim from dist, and a Gecko-shaped manifest.
+  #
+  # Four things differ from the Chromium manifest and each one is load-bearing:
+  #   * background.scripts, not background.service_worker — Gecko implements MV3
+  #     with event pages; a service_worker key makes the extension fail to load.
+  #   * browser_specific_settings.gecko.id — required, and it is the value the
+  #     native-messaging manifest lists under allowed_extensions (Chromium keys
+  #     that on chrome-extension:// origins instead), so the two must agree.
+  #   * no "key" — that is Chromium's deterministic-id mechanism; Gecko derives
+  #     identity from the gecko.id above and warns on the unknown key.
+  #   * a reduced permission set — see FIREFOX_DROPPED below.
+  echo "Building Firefox WebExtension (MV3)..."
+  rm -rf extension/dist-firefox
+  mkdir -p extension/dist-firefox
+  bun build extension/src/background-firefox.ts --outfile=extension/dist-firefox/background-firefox.js --target=browser
+  cp extension/dist/content.js extension/dist-firefox/content.js
+  cp extension/dist/net-buffer-content.js extension/dist-firefox/net-buffer-content.js
+  cp extension/dist/inject-net.js extension/dist-firefox/inject-net.js
+  cp extension/dist/inject-canvas.js extension/dist-firefox/inject-canvas.js
+  cp extension/dist/popup.js extension/dist-firefox/popup.js
+  cp extension/popup.html extension/dist-firefox/popup.html
+  rm -rf extension/dist-firefox/icons
+  cp -R extension/icons extension/dist-firefox/icons
+  bun -e '
+const fs = require("fs");
+const base = JSON.parse(fs.readFileSync("extension/manifest.json", "utf8"));
+// Permissions Gecko has no implementation for. Listing one is not fatal (Firefox
+// warns and ignores it) but it would misrepresent the surface to anyone reading
+// the manifest, and the matching verbs fail at the API call either way.
+const FIREFOX_DROPPED = new Set([
+  "tabGroups",     // no browser.tabGroups; tab-group listeners degrade to ungrouped
+  "debugger",      // no CDP lane in Gecko
+  "power",         // no browser.power; keepawake has no backend
+  "offscreen",     // no offscreen documents -> tesseract OCR cannot run
+  "tabCapture",    // no browser.tabCapture
+  "pageCapture",   // no browser.pageCapture
+  "userScripts",   // Gecko userScripts is a different, MV2-shaped API
+  "search",        // browser.search exists but with an incompatible shape
+]);
+const manifest = {
+  manifest_version: 3,
+  name: "Interceptor",
+  version: base.version,
+  description: base.description,
+  icons: base.icons,
+  // Gecko requires an explicit add-on id for native messaging. Keep it in
+  // lockstep with allowed_extensions in daemon/com.interceptor.host.firefox.json.
+  // strict_min_version 129: content_scripts world:"MAIN" landed in 128 and
+  // match_origin_as_fallback in 129, and both are used below.
+  browser_specific_settings: {
+    gecko: { id: "interceptor@hackervalley.media", strict_min_version: "129.0" }
+  },
+  permissions: base.permissions.filter((p) => !FIREFOX_DROPPED.has(p)),
+  host_permissions: base.host_permissions,
+  commands: base.commands,
+  // Event page. The bundle is self-contained (bun inlines every import), so no
+  // type:module — Gecko accepts it but it buys nothing here.
+  background: { scripts: ["background-firefox.js"] },
+  content_security_policy: base.content_security_policy,
+  action: {
+    default_title: "Interceptor",
+    default_popup: "popup.html",
+    default_icon: base.action && base.action.default_icon ? base.action.default_icon : base.icons
+  },
+  content_scripts: [
+    { matches: ["<all_urls>"], js: ["net-buffer-content.js"], run_at: "document_start", all_frames: true, match_origin_as_fallback: true },
+    { matches: ["<all_urls>"], js: ["inject-net.js"], run_at: "document_start", world: "MAIN", all_frames: true, match_origin_as_fallback: true },
+    { matches: ["<all_urls>"], js: ["inject-canvas.js"], run_at: "document_start", world: "MAIN", all_frames: true, match_origin_as_fallback: true },
+    { matches: ["<all_urls>"], js: ["content.js"], run_at: "document_idle", all_frames: true, match_origin_as_fallback: true }
+  ]
+};
+fs.writeFileSync("extension/dist-firefox/manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+'
+  chmod 644 extension/dist-firefox/* 2>/dev/null || true
+  chmod -R u+rwX,go+rX extension/dist-firefox/icons 2>/dev/null || true
+}
+
 build_host() {
   echo "Building CLI (host)..."
   bun build cli/index.ts --compile --outfile=dist/interceptor
@@ -341,6 +421,77 @@ build_windows_arch() {
   cp -R extension/dist "$stage/extension"
 }
 
+build_linux_arch() {
+  local arch="$1"
+  local bun_target stage
+
+  # x64 uses the -baseline target on purpose. The non-baseline bun-linux-x64
+  # build requires AVX2, which is absent under x86-64 emulation (Rosetta /
+  # qemu-user, i.e. every amd64 container on an Apple-Silicon host) and on
+  # pre-Haswell hardware; the binary SIGILLs on first instruction with no
+  # diagnostic. Same rationale as bun-windows-x64-baseline above.
+  #
+  # The -musl variants target Alpine and other musl distros. A glibc-linked
+  # binary does not run there at all (the loader path itself differs), so this
+  # is a separate artifact, not a compatibility flag.
+  case "$arch" in
+    x64)         bun_target="bun-linux-x64-baseline" ;;
+    arm64)       bun_target="bun-linux-arm64" ;;
+    x64-musl)    bun_target="bun-linux-x64-musl-baseline" ;;
+    arm64-musl)  bun_target="bun-linux-arm64-musl" ;;
+    *) echo "Unsupported Linux architecture: $arch" >&2; exit 1 ;;
+  esac
+
+  stage="dist/linux/$arch"
+  rm -rf "$stage"
+  mkdir -p "$stage/daemon" "$stage/scripts"
+
+  echo "Building CLI (Linux $arch, $bun_target)..."
+  bun build cli/index.ts --compile --target="$bun_target" --outfile="$stage/interceptor"
+  echo "Building daemon (Linux $arch, $bun_target)..."
+  bun build daemon/index.ts --compile --target="$bun_target" --outfile="$stage/daemon/interceptor-daemon"
+
+  # Native-messaging manifest template. Unlike Windows (registry + a fixed
+  # relative path) Linux hosts read an absolute `path` out of the JSON, so the
+  # template ships with the __DAEMON_PATH__ placeholder and scripts/install.sh
+  # resolves it against wherever the package was extracted.
+  cp daemon/com.interceptor.host.json "$stage/daemon/com.interceptor.host.json"
+  cp daemon/com.interceptor.host.firefox.json "$stage/daemon/com.interceptor.host.firefox.json"
+
+  # Layout below is exactly what scripts/install.sh expects to find relative to
+  # its own parent dir, so the staged tree is directly installable after
+  # extraction: `bash scripts/install.sh --browser-only --chrome`.
+  if [[ ! -f extension/dist/manifest.json ]]; then
+    echo "extension/dist is missing — build_extension must run before build_linux_arch" >&2
+    exit 1
+  fi
+  rm -rf "$stage/extension"
+  mkdir -p "$stage/extension"
+  cp -R extension/dist "$stage/extension/dist"
+  # Gecko retarget ships alongside the Chromium one; scripts/install.sh picks
+  # the directory that matches the chosen browser.
+  if [[ ! -f extension/dist-firefox/manifest.json ]]; then
+    echo "extension/dist-firefox is missing — build_extension_firefox must run before build_linux_arch" >&2
+    exit 1
+  fi
+  cp -R extension/dist-firefox "$stage/extension/dist-firefox"
+
+  cp scripts/install.sh scripts/uninstall.sh "$stage/scripts/"
+
+  # Skill packs next to the CLI binary — resolvePackDir() in cli/commands/skills.ts
+  # looks for <dir of argv0>/skills, so `interceptor skills adopt` works from the
+  # extracted package without a repo checkout. Mirrors the Windows {app}\skills
+  # staging in scripts/installer/interceptor.iss.
+  rm -rf "$stage/skills"
+  mkdir -p "$stage/skills"
+  for pack in interceptor interceptor-browser interceptor-research; do
+    cp -R ".agents/skills/$pack" "$stage/skills/$pack"
+  done
+  find "$stage/skills" -name '._*' -delete 2>/dev/null || true
+
+  chmod 755 "$stage/interceptor" "$stage/daemon/interceptor-daemon"
+}
+
 build_bridge() {
   # Swift-only, macOS-only. Warn-and-continue on CI/linux hosts.
   if ! command -v swift >/dev/null 2>&1; then
@@ -369,21 +520,28 @@ if [[ "$BUILD_ALL" == "1" ]]; then
   build_extension
   build_extension_mv2
   build_extension_safari
+  build_extension_firefox
   build_host
   build_macos
   build_windows_arch x64
   build_windows_arch arm64
+  build_linux_arch x64
+  build_linux_arch arm64
+  build_linux_arch x64-musl
+  build_linux_arch arm64-musl
   build_bridge
 elif [[ "$TARGET" == "host" ]]; then
   build_extension
   build_extension_mv2
   build_extension_safari
+  build_extension_firefox
   build_host
   build_bridge
 elif [[ "$TARGET" == "macos" ]]; then
   build_extension
   build_extension_mv2
   build_extension_safari
+  build_extension_firefox
   build_macos
   build_bridge
 elif [[ "$TARGET" == "windows-x64" ]]; then
@@ -394,6 +552,25 @@ elif [[ "$TARGET" == "windows-arm64" ]]; then
   build_windows_arch arm64
 elif [[ "$TARGET" == "windows" ]]; then
   echo "Unsupported target: windows. Use --target=windows-x64 or --target=windows-arm64." >&2
+  exit 1
+elif [[ "$TARGET" == "linux-x64" ]]; then
+  build_extension
+  build_extension_firefox
+  build_linux_arch x64
+elif [[ "$TARGET" == "linux-arm64" ]]; then
+  build_extension
+  build_extension_firefox
+  build_linux_arch arm64
+elif [[ "$TARGET" == "linux-x64-musl" ]]; then
+  build_extension
+  build_extension_firefox
+  build_linux_arch x64-musl
+elif [[ "$TARGET" == "linux-arm64-musl" ]]; then
+  build_extension
+  build_extension_firefox
+  build_linux_arch arm64-musl
+elif [[ "$TARGET" == "linux" ]]; then
+  echo "Unsupported target: linux. Use --target=linux-x64, linux-arm64, linux-x64-musl, or linux-arm64-musl." >&2
   exit 1
 else
   echo "Unsupported target: $TARGET" >&2
@@ -407,7 +584,10 @@ fi
 # No --entitlements here: entitlement enforcement only applies under the
 # hardened runtime, which ad-hoc signing doesn't enable. Release builds are
 # re-signed (--force) with the real identity + entitlements by release.sh.
-if [[ "$(uname -s)" == "Darwin" && "$TARGET" != windows-* ]] && command -v codesign >/dev/null 2>&1; then
+# Cross-target stages (windows-*, linux-*) produce PE/ELF images that codesign
+# cannot sign and that this host cannot execute — signing or smoke-running them
+# here would fail the build on a correct artifact.
+if [[ "$(uname -s)" == "Darwin" && "$TARGET" != windows-* && "$TARGET" != linux-* ]] && command -v codesign >/dev/null 2>&1; then
   for b in dist/interceptor daemon/interceptor-daemon dist/interceptor-bridge; do
     if [[ -f "$b" ]]; then
       codesign --remove-signature "$b" 2>/dev/null || true
@@ -428,6 +608,7 @@ if [[ "$BUILD_ALL" == "1" ]]; then
   echo "  Extension: extension/dist/"
   echo "  Electron extension: extension/dist-mv2/"
   echo "  Safari extension: extension/dist-safari/"
+  echo "  Firefox extension: extension/dist-firefox/"
   echo "  Host CLI:   dist/interceptor"
   echo "  Host Daemon: daemon/interceptor-daemon"
   echo "  macOS CLI:  dist/interceptor"
@@ -435,14 +616,27 @@ if [[ "$BUILD_ALL" == "1" ]]; then
   echo "  macOS Bridge: dist/interceptor-bridge"
   echo "  Windows x64: dist/windows/x64/"
   echo "  Windows ARM64: dist/windows/arm64/"
+  echo "  Linux x64: dist/linux/x64/"
+  echo "  Linux ARM64: dist/linux/arm64/"
+  echo "  Linux x64 (musl): dist/linux/x64-musl/"
+  echo "  Linux ARM64 (musl): dist/linux/arm64-musl/"
 elif [[ "$TARGET" == "windows-x64" ]]; then
   echo "  Windows x64: dist/windows/x64/"
 elif [[ "$TARGET" == "windows-arm64" ]]; then
   echo "  Windows ARM64: dist/windows/arm64/"
+elif [[ "$TARGET" == "linux-x64" ]]; then
+  echo "  Linux x64: dist/linux/x64/"
+elif [[ "$TARGET" == "linux-arm64" ]]; then
+  echo "  Linux ARM64: dist/linux/arm64/"
+elif [[ "$TARGET" == "linux-x64-musl" ]]; then
+  echo "  Linux x64 (musl): dist/linux/x64-musl/"
+elif [[ "$TARGET" == "linux-arm64-musl" ]]; then
+  echo "  Linux ARM64 (musl): dist/linux/arm64-musl/"
 else
   echo "  Extension: extension/dist/"
   echo "  Electron extension: extension/dist-mv2/"
   echo "  Safari extension: extension/dist-safari/"
+  echo "  Firefox extension: extension/dist-firefox/"
   echo "  CLI:       dist/interceptor"
   echo "  Daemon:    daemon/interceptor-daemon"
   if [[ "$(uname -s)" == "Darwin" ]]; then

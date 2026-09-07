@@ -2,11 +2,14 @@ import { describe, expect, test } from "bun:test"
 import { nskeyedArchive } from "../daemon/ios/usertunnel"
 import { nskeyedUnarchive } from "../daemon/ios/nskeyed"
 import { decodePlist, PlistUID } from "../daemon/ios/webinspector-plist"
+import { HAS_PLUTIL } from "./helpers/macos-tools"
 
 // Round-trips NSKeyedArchiver: archive a PlistNode → binary plist → unarchive to
 // plain JS. Proves the $objects/CF$UID graph resolves and bounds hold.
 
-describe("nskeyed round-trip", () => {
+// nskeyedArchive builds the object graph as XML and hands it to `plutil
+// -convert binary1`, so the whole suite needs the macOS tool present.
+describe.skipIf(!HAS_PLUTIL)("nskeyed round-trip", () => {
   test("string", () => {
     expect(nskeyedUnarchive(nskeyedArchive({ str: "hello" }))).toBe("hello")
   })

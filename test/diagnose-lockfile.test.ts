@@ -18,6 +18,19 @@ const LOCK: LockFileData = {
   mode: "standalone",
 }
 
+// installedNmhManifests() scans the platform's real native-messaging layout:
+// ~/Library/Application Support/<vendor dir> on macOS, $XDG_CONFIG_HOME (or
+// ~/.config) on Linux, and a different browser set on each. Build fixtures in
+// whichever shape the host uses so the same assertions hold on both.
+const IS_LINUX = process.platform === "linux"
+const NMH_ROOT_REL = IS_LINUX ? ".config" : "Library/Application Support"
+const NMH_DIRS: Record<string, string> = IS_LINUX
+  ? { chrome: "google-chrome", brave: "BraveSoftware/Brave-Browser" }
+  : { chrome: "Google/Chrome", brave: "BraveSoftware/Brave-Browser", "chrome-canary": "Google/Chrome Canary" }
+// A configurable browser other than the one the primary cases use, so
+// "non-default browser" coverage stays meaningful on both platforms.
+const SECOND_BROWSER = IS_LINUX ? "chrome" : "chrome-canary"
+
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "interceptor-lock-test-")) })
 afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
@@ -72,13 +85,10 @@ describe("binary mismatch detection", () => {
 
   function fixtureHome(manifests: Record<string, { path?: string } | "corrupt">): string {
     const home = join(dir, "home")
-    const dirs: Record<string, string> = {
-      chrome: "Google/Chrome",
-      brave: "BraveSoftware/Brave-Browser",
-      "chrome-canary": "Google/Chrome Canary",
-    }
+    const dirs = NMH_DIRS
     for (const [browser, content] of Object.entries(manifests)) {
-      const nmhDir = join(home, "Library/Application Support", dirs[browser], "NativeMessagingHosts")
+      if (!dirs[browser]) continue
+      const nmhDir = join(home, NMH_ROOT_REL, dirs[browser], "NativeMessagingHosts")
       mkdirSync(nmhDir, { recursive: true })
       writeFileSync(
         join(nmhDir, "com.interceptor.host.json"),
@@ -114,11 +124,11 @@ describe("binary mismatch detection", () => {
   test("covers non-default browsers from the install.sh set", async () => {
     fixtureHome({
       brave: { path: LOCK.execPath },
-      "chrome-canary": { path: "/stale/dev/build" },
+      [SECOND_BROWSER]: { path: "/stale/dev/build" },
     })
     const mismatches = await detect(LOCK)
     expect(mismatches).toEqual([
-      { browser: "chrome-canary", manifestPath: "/stale/dev/build", runningPath: LOCK.execPath },
+      { browser: SECOND_BROWSER, manifestPath: "/stale/dev/build", runningPath: LOCK.execPath },
     ])
   })
 
@@ -157,7 +167,7 @@ describe("context-kind-aware probes", () => {
 describe("interceptor diagnose (spawned, no daemon)", () => {
   test("--json reports daemon down + mismatch from fixtures, never spawns a daemon", () => {
     const home = join(dir, "home")
-    const nmhDir = join(home, "Library/Application Support/Google/Chrome/NativeMessagingHosts")
+    const nmhDir = join(home, NMH_ROOT_REL, NMH_DIRS.chrome, "NativeMessagingHosts")
     mkdirSync(nmhDir, { recursive: true })
     writeFileSync(join(nmhDir, "com.interceptor.host.json"), JSON.stringify({ path: "/somewhere/else" }), "utf-8")
 

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs"
 import { readLockFile, type LockFileData } from "../../daemon/lifecycle"
-import { IPC_PORT, LOCK_PATH, WS_PORT } from "../../shared/platform"
+import { IPC_PORT, LOCK_PATH, WS_PORT, isProcessAlive } from "../../shared/platform"
 import { sendCommand } from "../transport"
 
 export type DaemonStopOptions = {
@@ -49,13 +49,11 @@ export function parseDaemonStopArgs(args: string[]): DaemonStopOptions {
   return { reason, timeoutMs }
 }
 
+// Zombie-aware: a detached daemon reparented to a non-reaping PID 1 (any
+// container started without an init) keeps answering signal 0 after it exits,
+// which would make waitForStopped below time out on a daemon that did stop.
 function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
+  return isProcessAlive(pid)
 }
 
 async function tcpPortOpen(port: number, timeoutMs = 150): Promise<boolean> {
