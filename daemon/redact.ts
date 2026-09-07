@@ -14,6 +14,8 @@ export function isSecretBearing(action: unknown): boolean {
   const a = action as Record<string, unknown>
   if (a.type === "macos_secret" || a.type === "ios_login") return true
   if (typeof a.secret === "string") return true
+  // issue #248: a Chrome saved-login fill; the delivered value rides text/inputText.
+  if (a.chromeLogin && typeof a.chromeLogin === "object") return true
   if (a.sensitive === true) return true
   return false
 }

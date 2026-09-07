@@ -80,7 +80,7 @@ export function parseActionsCommand(filtered: string[], positionalCount?: number
       // callers (tests) that don't pass the boundary working.
       const textArgs = positionalCount !== undefined
         ? filtered.slice(2, positionalCount + 1)
-        : filtered.slice(2).filter(a => a !== "--append" && !TRUSTED_FLAG_VALUES.includes(a) && a !== "--secret" && filtered[filtered.indexOf(a) - 1] !== "--secret")
+        : filtered.slice(2).filter(a => a !== "--append" && a !== "--user" && !TRUSTED_FLAG_VALUES.includes(a) && a !== "--secret" && a !== "--chrome-login" && filtered[filtered.indexOf(a) - 1] !== "--secret" && filtered[filtered.indexOf(a) - 1] !== "--chrome-login")
       // issue #244: `--secret <name>` types a vault value by name. The daemon
       // resolves it after logging and checks the page host against the
       // secret's allowlist; the CLI process never holds the value.
@@ -92,6 +92,23 @@ export function parseActionsCommand(filtered: string[], positionalCount?: number
         if (useOs) return { type: "os_type", ...target, secret: secretName }
         if (target.semantic) return { type: "find_and_type", name: target.semantic.name, role: target.semantic.role, secret: secretName, clear: !append }
         return { type: "input_text", ...target, secret: secretName, clear: !append }
+      }
+      // issue #248: `--chrome-login <host>` fills a field from Chrome's own
+      // saved logins for the current page. `--user` picks the username, else
+      // the password. The daemon reads and decrypts the credential, verifies
+      // the requested host matches the live page host, and delivers the value
+      // by the same leaked-proof legs as --secret; the CLI never holds it.
+      const chromeIdx = filtered.indexOf("--chrome-login")
+      if (chromeIdx !== -1) {
+        const host = filtered[chromeIdx + 1]
+        if (!host || host.startsWith("--")) { console.error("error: --chrome-login requires a host (e.g. --chrome-login my.functionhealth.com)"); process.exit(1) }
+        if (secretIdx !== -1) { console.error("error: --chrome-login and --secret are mutually exclusive"); process.exit(1) }
+        if (textArgs.join("").length) { console.error("error: --chrome-login and literal text are mutually exclusive"); process.exit(1) }
+        const field = filtered.includes("--user") ? "user" : "pass"
+        const chromeLogin = { host, field }
+        if (useOs) return { type: "os_type", ...target, chromeLogin }
+        if (target.semantic) return { type: "find_and_type", name: target.semantic.name, role: target.semantic.role, chromeLogin, clear: !append }
+        return { type: "input_text", ...target, chromeLogin, clear: !append }
       }
       if (useOs) {
         return { type: "os_type", ...target, text: textArgs.join(" ") }

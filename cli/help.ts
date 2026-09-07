@@ -262,6 +262,9 @@ Actions:
   interceptor type <index|ref> <text> --append  Type without clearing
   interceptor type "role:name" <text>        Type using semantic selector (e.g. "button:Submit")
   interceptor type <index|ref> --secret <name>   Type a vault secret by name (value resolved in the daemon, never shown)
+  interceptor type <index|ref> --chrome-login <host> [--user]   Fill a Chrome saved login for the current page (password, or username with --user)
+  interceptor chrome creds list [--host <host>]   List Chrome saved logins (host + username only; no passwords)
+  interceptor chrome creds status                List Chrome profiles that hold a Login Data store
   interceptor click "text:<query>"            Click first element whose textContent matches (e.g. "text:Save")
   interceptor select <index|ref> <value>     Select dropdown option
   interceptor focus <index|ref>              Focus element

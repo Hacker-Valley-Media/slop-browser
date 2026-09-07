@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Interceptor Electron App Bridge",
-  "version": "0.24.10",
+  "version": "0.24.11",
   "description": "Electron app bridge",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr8I3MwCNVrLcP0OCP8fRpiGWHIpbu2iMsyweU4YcX/CWdmO2fnZAJ6UP+IKkM5Zw9mt9kY4CFW4tZt096ChuMKiVBg4HM47ffWHTlo6rXOzdLuXMQ6MtFDuqbQuq6x0tLgYlOr7UxSiPVFgPRuczOz+kPkTO/h8nJNDaouNY1WnG4/ESruv10gwLwxgNKEvisnjxDU6lw9zDm/+pF8aAB8RMJbJQpRRBKDVL8rTRb4yCp6qi8E9VkJRK3sTD9sX0fgZoYd4pkvbK+7kPh9oxiuzPKNCKm9v8XTCVBh+sWBJBdke7PAoERkdXOs2MEijjO2A0X4/tzqygr3oARSghkQIDAQAB",
   "icons": {

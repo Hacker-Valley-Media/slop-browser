@@ -64,7 +64,8 @@ const STATE = ["--depth", "--filter", "--limit", "--max-chars", "--role"]
 // treats them as booleans and strips their operands, so
 // `click --selector button --nth 4` arrives with selector === "--nth".
 // --secret names a vault entry for `type` (issue #244); the value never rides argv.
-const ACTIONS = ["--at", "--duration", "--from", "--nth", "--secret", "--selector", "--steps", "--to"]
+// --chrome-login names the host whose Chrome-saved login to fill (issue #248).
+const ACTIONS = ["--at", "--chrome-login", "--duration", "--from", "--nth", "--secret", "--selector", "--steps", "--to"]
 const NAV = ["--amount", "--ms", "--timeout"]
 const NET = ["--filter", "--format", "--limit", "--out", "--since", "--pattern", "--patterns", "--type"]
 const SCREENSHOT = ["--clip", "--element", "--filter", "--format", "--kind", "--limit", "--quality", "--ref", "--region", "--scale", "--selector", "--target-max-long-edge", "--threshold"]
@@ -132,7 +133,7 @@ const VALUE_FLAGS_BY_CMD: Record<string, string[]> = {
 // consumption pattern, so keep it in sync when adding a family here.
 const COMPOUND_BOOL = ["--activate", "--append", "--full", "--include-frames", "--include-style", "--markdown", "--net-only", "--no-read", "--no-reuse", "--no-wait", "--os", "--reuse", "--text-only", "--tree-only", "--trusted"]
 const STATE_BOOL = ["--elements-only", "--full", "--include-frames", "--markdown", "--native", "--text-only"]
-const ACTIONS_BOOL = ["--append", "--dropzone", "--picker", "--trusted", "--os"]
+const ACTIONS_BOOL = ["--append", "--dropzone", "--picker", "--trusted", "--os", "--user"]
 const TABS_BOOL = ["--incognito"]
 const TAB_BOOL = ["--activate", "--no-reuse", "--reuse"]
 const NET_BOOL = ["--from-start", "--persist", "--reload", "--redact-auth"]

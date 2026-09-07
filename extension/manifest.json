@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Interceptor",
-  "version": "0.24.10",
+  "version": "0.24.11",
   "minimum_chrome_version": "116",
   "description": "Browser side of the Interceptor CLI: lets your local AI agent read, act on, and inspect pages in your own signed-in browser.",
   "icons": {
