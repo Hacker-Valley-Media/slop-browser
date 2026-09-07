@@ -35,6 +35,10 @@ const BRAVE_NM_SUBSTR = IS_DARWIN
   ? "BraveSoftware/Brave-Browser/NativeMessagingHosts"
   : ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts"
 
+// Chromium é alvo só-Linux nesta revisão (o install.sh o adiciona na fase-2 do port). NM dir:
+// `~/.config/chromium/NativeMessagingHosts`.
+const CHROMIUM_NM_SUBSTR = "chromium/NativeMessagingHosts"
+
 /**
  * Whether a browser binary/app is detectable on this platform.
  *
@@ -43,9 +47,10 @@ const BRAVE_NM_SUBSTR = IS_DARWIN
  * that need a specific browser to be auto-detected skip themselves when it's
  * absent so CI without browsers installed stays green.
  */
-function browserInstalled(target: "chrome" | "brave" | "edge" | "vivaldi"): boolean {
+function browserInstalled(target: "chrome" | "brave" | "edge" | "vivaldi" | "chromium"): boolean {
   if (IS_DARWIN) {
-    const apps: Record<typeof target, string> = {
+    if (target === "chromium") return false // chromium é alvo só-Linux neste teste (port fase-2)
+    const apps: Record<"chrome" | "brave" | "edge" | "vivaldi", string> = {
       chrome: "/Applications/Google Chrome.app",
       brave: "/Applications/Brave Browser.app",
       edge: "/Applications/Microsoft Edge.app",
@@ -54,11 +59,14 @@ function browserInstalled(target: "chrome" | "brave" | "edge" | "vivaldi"): bool
     return spawnSync("test", ["-d", apps[target]]).status === 0
   }
   // Edge / Vivaldi on Linux are out of scope in this revision (a follow-up).
-  // Only chrome and brave have Linux install-detection.
+  // chrome, brave e chromium têm detecção de instalação no Linux (chromium veio na fase-2 do port).
   if (target === "edge" || target === "vivaldi") return false
-  const candidates = target === "chrome"
-    ? ["google-chrome", "google-chrome-stable"]
-    : ["brave-browser", "brave"]
+  const candidates =
+    target === "chrome"
+      ? ["google-chrome", "google-chrome-stable"]
+      : target === "chromium"
+        ? ["chromium", "chromium-browser"]
+        : ["brave-browser", "brave"]
   return candidates.some(b => spawnSync("command", ["-v", b], { shell: true }).status === 0)
 }
 
@@ -213,6 +221,12 @@ describe("install browser selection — dry-run", () => {
       expect(stdout).toMatch(/only supported browser found|defaulting to 'brave' \(non-interactive/)
       expect(stdout).toContain("Browser: brave")
       expect(stdout).toContain(BRAVE_NM_SUBSTR)
+    } else if (browserInstalled("chromium")) {
+      // Chromium-only host (Linux; chromium virou alvo de primeira classe na fase-2 do port), então
+      // o install.sh auto-seleciona chromium em vez de abortar.
+      expect(stdout).toMatch(/only supported browser found|defaulting to 'chromium' \(non-interactive/)
+      expect(stdout).toContain("Browser: chromium")
+      expect(stdout).toContain(CHROMIUM_NM_SUBSTR)
     } else {
       // No browser installed — script aborts before NM resolution. Documented exit path.
       expect(status).not.toBe(0)
