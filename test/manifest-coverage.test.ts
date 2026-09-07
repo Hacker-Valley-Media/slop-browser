@@ -34,6 +34,8 @@ describe("manifest command specs", () => {
   test("no duplicate command names", () => {
     const names = COMMAND_SPECS.map(s => s.name)
     expect(new Set(names).size).toBe(names.length)
+    // MCP puts each manifest name into one argv token; subcommands belong in usage.
+    for (const spec of COMMAND_SPECS.filter(s => s.surface === "browser")) expect(spec.name).not.toMatch(/\s/)
   })
 
   test("browser search semantics cannot drift back to false in-page wording", () => {

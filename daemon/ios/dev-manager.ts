@@ -11,7 +11,7 @@
 import {
   devError, classifyDevError, type IosDevResult,
 } from "../../shared/ios-dev"
-import { iosContextId, iosUdidSlug, udidFromContextId, isIosContextId } from "../../shared/ios-device"
+import { iosContextId, iosUdidSlug, isIosContextId } from "../../shared/ios-device"
 import { discoverWebLaneDevices, reconcileByUdid, type WebLaneDevice, type ManagerDescriptorLite } from "./device-services"
 import { BoundedBuffer } from "./service-plist"
 import type { BufferedItem } from "./service-plist"
@@ -20,6 +20,7 @@ import { captureScreenshot } from "./screenshotr"
 import { backupInfo } from "./backup"
 import { axAuditProbe } from "./axaudit"
 import { resizePngToBudget } from "./tools"
+import { resolveUdid as resolveSavedUdid } from "./state"
 
 /** Re-encode/shrink a screenshot PNG so it fits the daemon↔CLI socket (a raw
  *  9 MB PNG stalls it; the native screenshot verb budgets the same way). */
@@ -73,7 +74,7 @@ export class IosDevServiceManager {
     action: { [k: string]: unknown }, outerContextId?: string,
   ): Promise<{ udid: string; contextId: string } | { error: IosDevResult }> {
     const explicit = firstString(action.device) ?? (isIosContextId(outerContextId) ? outerContextId : firstString(outerContextId))
-    let udid = explicit ? udidFromContextId(explicit) ?? explicit : undefined
+    let udid = explicit ? resolveSavedUdid(explicit) : undefined
     if (!udid) {
       const listed = await this.listDevices().catch(() => [])
       const paired = listed.filter((d) => d.paired)

@@ -6,13 +6,14 @@
  * combines the results into a single output.
  */
 
-import { sendCommand, sendCommandWs, type DaemonResponse } from "../transport"
+import { ActionValidationError, sendCommand, sendCommandWs, type DaemonResponse } from "../transport"
 import { parseElementTarget } from "../parse"
 import { hasTrustedFlag } from "./flags"
+import { normalizeArgsSplit } from "../normalize"
 import { maybeEmitResearchHint } from "./research"
 
 type Action = { type: string; [key: string]: unknown }
-type Result = { success: boolean; error?: string; data?: unknown; tabId?: number }
+type Result = { success: boolean; error?: string; data?: unknown; tabId?: number; deliveryAttempted?: boolean }
 type ReadAggregate = {
   success: boolean
   tree?: string
@@ -47,7 +48,7 @@ async function send(action: Action, tabId?: number, useWs = false, contextId?: s
       : await sendCommand(action, tabId, contextId)
     return unwrap(resp)
   } catch (err) {
-    return { success: false, error: (err as Error).message }
+    return { success: false, error: (err as Error).message, deliveryAttempted: !(err instanceof ActionValidationError) }
   }
 }
 
@@ -595,42 +596,40 @@ export async function runAct(
   globalTabId?: number,
   jsonMode = false,
   useWs = false,
-  contextId?: string
+  contextId?: string,
+  positionalCount?: number
 ): Promise<void> {
+  const normalized = positionalCount === undefined ? normalizeArgsSplit(filtered) : { argv: filtered, positionalCount }
+  filtered = normalized.argv
+  const positionalEnd = normalized.positionalCount + 1
+  const flags = filtered.slice(positionalEnd)
   const ref = filtered[1]
   if (!ref) {
     console.error("error: interceptor act requires a ref. Usage: interceptor act <ref> [value]")
     process.exit(1)
   }
 
-  const useOs = hasTrustedFlag(filtered)
-  const append = filtered.includes("--append")
-  const noRead = filtered.includes("--no-read")
-  const keysIdx = filtered.indexOf("--keys")
-  const timeoutIdx = filtered.indexOf("--timeout")
-  const timeout = timeoutIdx !== -1 ? parseInt(filtered[timeoutIdx + 1]) : 2000
-
-  // Find value: everything after ref that isn't a flag
-  const flagSet = new Set(["--trusted", "--os", "--append", "--no-read", "--keys", "--timeout"])
-  const valueArgs: string[] = []
-  let skip = false
-  for (let i = 2; i < filtered.length; i++) {
-    if (skip) { skip = false; continue }
-    if (filtered[i] === "--timeout" || filtered[i] === "--keys") { skip = true; continue }
-    if (flagSet.has(filtered[i])) continue
-    valueArgs.push(filtered[i])
+  if (["click", "type", "keys"].includes(ref) && /^e\d+(?:_\d+)?$/.test(filtered[2] ?? "")) {
+    output(jsonMode, { success: false, error: `act takes the ref directly. Use interceptor act ${filtered[2]} [value]` })
+    return
   }
+  const useOs = hasTrustedFlag(flags)
+  const append = flags.includes("--append")
+  const noRead = flags.includes("--no-read")
+  const keysIdx = flags.indexOf("--keys")
+  const timeoutIdx = flags.indexOf("--timeout")
+  const timeout = timeoutIdx !== -1 ? parseInt(flags[timeoutIdx + 1]) : 2000
+  const valueArgs = filtered.slice(2, positionalEnd)
   const value = valueArgs.length > 0 ? valueArgs.join(" ") : undefined
 
   const target = parseElementTarget(ref)
 
   // Step 1: Perform the action (may throw if click navigates the page)
   let actionResult: Result
-  let actionNavigated = false
 
   try {
   if (keysIdx !== -1) {
-    const keys = filtered[keysIdx + 1]
+    const keys = flags[keysIdx + 1]
     if (useOs) {
       const keyParts = keys.split("+")
       const key = keyParts[keyParts.length - 1]
@@ -669,33 +668,16 @@ export async function runAct(
   }
 
   } catch (err) {
-    // Click succeeded but page navigated, breaking the response port
-    const msg = (err as Error).message || ""
-    if (msg.includes("back/forward cache") || msg.includes("message channel is closed") || msg.includes("timeout")) {
-      actionNavigated = true
-      actionResult = { success: true }
-    } else {
-      output(jsonMode, { success: false, error: msg })
+    if (err instanceof ActionValidationError) {
+      output(jsonMode, { success: false, error: err.message })
       return
     }
+    actionResult = { success: false, error: (err as Error).message }
   }
 
   if (!actionResult!.success) {
     const errMsg = actionResult!.error || "action failed"
-    if (errMsg.includes("back/forward cache") || errMsg.includes("message channel is closed")) {
-      actionNavigated = true
-    } else {
-      output(jsonMode, { success: false, error: errMsg })
-      return
-    }
-  }
-
-  if (actionNavigated) {
-    if (jsonMode) {
-      output(jsonMode, { success: true, data: { action: "ok", note: "page navigated — use interceptor read to see the new page" } })
-    } else {
-      console.log("ok (page navigated — use interceptor read to see the new page)")
-    }
+    output(jsonMode, { success: false, error: actionResult!.deliveryAttempted === false ? errMsg : `${errMsg}. Delivery is unverified; read the target before retrying.` })
     return
   }
 
@@ -716,13 +698,11 @@ export async function runAct(
       globalTabId, useWs, contextId
     )
     diffResult = await send({ type: "diff" }, globalTabId, useWs, contextId)
-  } catch {
-    // Page likely navigated — action succeeded but post-read failed
-    if (jsonMode) {
-      output(jsonMode, { success: true, data: { action: "ok", note: "page navigated, post-action read unavailable" } })
-    } else {
-      console.log("ok (page navigated — use interceptor read to see the new page)")
-    }
+  } catch (err) {
+    treeResult = { success: false, error: (err as Error).message }
+  }
+  if (!treeResult.success) {
+    output(jsonMode, { success: true, data: { action: "delivered", verified: false, note: `Post-action read unavailable: ${treeResult.error ?? "unknown error"}. Read the target to verify its state.` } })
     return
   }
 
@@ -846,14 +826,14 @@ function output(jsonMode: boolean, result: { success: boolean; error?: string; d
 export async function runCompoundCommand(
   cmd: string,
   filtered: string[],
-  opts: { jsonMode?: boolean; useWs?: boolean; globalTabId?: number; anyTab?: boolean; contextId?: string }
+  opts: { jsonMode?: boolean; useWs?: boolean; globalTabId?: number; anyTab?: boolean; contextId?: string; positionalCount?: number }
 ): Promise<void> {
   switch (cmd) {
     case "open":    return runOpen(filtered, opts.globalTabId, opts.jsonMode, opts.useWs, opts.contextId)
     case "websearch":
     case "search":  return runWebsearch(filtered, opts.globalTabId, opts.jsonMode, opts.useWs, opts.contextId)
     case "read":    return runRead(filtered, opts.globalTabId, opts.jsonMode, opts.useWs, opts.contextId)
-    case "act":     return runAct(filtered, opts.globalTabId, opts.jsonMode, opts.useWs, opts.contextId)
+    case "act":     return runAct(filtered, opts.globalTabId, opts.jsonMode, opts.useWs, opts.contextId, opts.positionalCount)
     case "inspect":  return runInspect(filtered, opts.globalTabId, opts.jsonMode, opts.useWs, opts.contextId)
     default:
       console.error(`error: unknown compound command '${cmd}'`)

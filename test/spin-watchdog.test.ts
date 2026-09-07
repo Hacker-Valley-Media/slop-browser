@@ -1,5 +1,17 @@
 import { describe, expect, test } from "bun:test"
-import { SPIN_BUSY_FRACTION, SPIN_EXIT_TICKS, spinWatchdogStep, type SpinWatchdogState } from "../daemon/spin-watchdog"
+import { captureSpinSample, SPIN_BUSY_FRACTION, SPIN_EXIT_TICKS, spinWatchdogStep, type SpinWatchdogState } from "../daemon/spin-watchdog"
+import { readFileSync, statSync, rmSync } from "node:fs"
+import { dirname } from "node:path"
+
+test.skipIf(process.platform !== "darwin")("watchdog retains a private, bounded native stack sample", async () => {
+  const started = Date.now()
+  const result = await captureSpinSample()
+  expect(result.error).toBeUndefined()
+  expect(Date.now() - started).toBeLessThan(16000)
+  expect(statSync(result.path!).mode & 0o777).toBe(0o600)
+  expect(readFileSync(result.path!, "utf8")).toContain("Call graph:")
+  rmSync(dirname(result.path!), { recursive: true })
+}, 17000)
 
 // Issue #216: the keepalive tick feeds CPU-per-tick + an idle flag into this
 // pure step; the daemon only logs/exits on its verdict.

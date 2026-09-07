@@ -12,11 +12,12 @@ import {
   IOS_SVC_STREAM_ACTION_TYPES, svcError, classifyServiceError,
   type IosSvcResult, type DiagKind, type FsOp,
 } from "../../shared/ios-service"
-import { iosContextId, iosUdidSlug, udidFromContextId, isIosContextId } from "../../shared/ios-device"
+import { iosContextId, iosUdidSlug, isIosContextId } from "../../shared/ios-device"
 import { discoverWebLaneDevices, reconcileByUdid, type WebLaneDevice, type ManagerDescriptorLite } from "./device-services"
 import * as svc from "./service-clients"
 import { BoundedBuffer } from "./service-plist"
 import type { BufferedItem } from "./service-plist"
+import { resolveUdid as resolveSavedUdid } from "./state"
 
 export type IosDeviceServiceManagerDeps = {
   discover?: () => Promise<WebLaneDevice[]>
@@ -58,7 +59,7 @@ export class IosDeviceServiceManager {
     action: { [k: string]: unknown }, outerContextId?: string,
   ): Promise<{ udid: string; contextId: string } | { error: IosSvcResult }> {
     const explicit = firstString(action.device) ?? (isIosContextId(outerContextId) ? outerContextId : firstString(outerContextId))
-    let udid = explicit ? udidFromContextId(explicit) ?? explicit : undefined
+    let udid = explicit ? resolveSavedUdid(explicit) : undefined
     if (!udid) {
       const listed = await this.listDevices().catch(() => [])
       const paired = listed.filter((d) => d.paired)

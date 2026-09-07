@@ -150,9 +150,13 @@ Connection model (how the runner reaches the phone):
     cannot start on a locked phone: unlock once by hand, then drive as usual.
   • Keep the phone UNLOCKED and AWAKE while driving. Auto-lock / sleep tears the
     runner down (you'll see connected:false again and the next verb re-launches).
-  • If a verb hangs or times out: confirm the phone is unlocked, on the same
-    network, and reachable — 'interceptor ios status' shows the live context and
-    'xcrun devicectl list devices' shows whether macOS sees it as "available".
+  • If a verb hangs or times out: confirm the phone is unlocked and reachable —
+    'interceptor ios status' shows the live context plus the dial-back address the
+    runner is handed (dialBack / dialBackVia); 'xcrun devicectl list devices'
+    shows whether macOS sees it as "available". iOS silently blocks a backgrounded
+    runner's LAN connection until Settings › Privacy & Security › Local Network
+    grants InterceptorRunner-Runner, so the daemon prefers a VPN address (Tailscale)
+    when the Mac has one — put the phone on the same VPN, or grant that switch once.
 
 Troubleshooting — when things aren't working, try these IN ORDER:
   1. "device not found" / "not visible to usbmuxd" — the phone dropped off the

@@ -2714,33 +2714,86 @@ function buildCspBypassRule(tabId) {
     }
   };
 }
-async function executeWithUserScripts(tabId, world, code) {
+var USER_SCRIPT_CLONE = `const __c=v=>{if(v==null)return v;const t=typeof v;if(t==="string"||t==="number"||t==="boolean")return v;if(t==="bigint")return v.toString();try{return JSON.parse(JSON.stringify(v))}catch{try{return String(v)}catch{return null}}};`;
+var USER_SCRIPT_CATCH = `catch(e){return{__ik:1,ok:false,error:String(e&&e.message||e)}}`;
+var USER_SCRIPT_RAN_KEY = "interceptor.eval.ran";
+function userScriptForms(code, nonce) {
+  const key = `Symbol.for(${JSON.stringify(USER_SCRIPT_RAN_KEY)})`;
+  return {
+    expression: `(async()=>{${USER_SCRIPT_CLONE}try{return{__ik:1,ok:true,value:__c(await (async()=>(
+${code}
+))())}}${USER_SCRIPT_CATCH}})()`,
+    statement: `globalThis[${key}]=${JSON.stringify(nonce)};try{
+${code}
+}catch(e){({__ik:1,ok:false,error:String(e&&e.message||e)})}`,
+    probe: `(()=>{const k=${key};const r=globalThis[k];delete globalThis[k];return r===${JSON.stringify(nonce)}})()`,
+    asyncBody: `(async()=>{${USER_SCRIPT_CLONE}try{
+${code}
+;return{__ik:1,ok:true}}${USER_SCRIPT_CATCH}})()`
+  };
+}
+var USER_SCRIPT_SYNTAX_ERROR = "SyntaxError: the code did not parse as an expression or as statements (or returned a value the browser could not serialize). Check quoting; multi-statement code that needs await should end with `return <value>`.";
+function unwrapUserScriptResult(raw) {
+  const r = raw;
+  if (r && typeof r === "object" && r.__ik === 1) {
+    return r.ok ? { success: true, data: r.value } : { success: false, error: r.error ?? "eval failed" };
+  }
+  return { success: true, data: raw };
+}
+async function executeWithUserScripts(tabId, world, code, frameId) {
   try {
     if (!chrome.userScripts || typeof chrome.userScripts.execute !== "function") {
-      return { available: false };
+      return { available: false, reason: "chrome.userScripts.execute is unavailable (check Allow User Scripts and browser support)" };
     }
-    const results = await chrome.userScripts.execute({
-      target: { tabId },
-      js: [{ code }],
-      world
-    });
-    const first = results[0];
-    if (!first)
-      return { available: true, result: { success: false, error: "no result" } };
-    if (first.error)
-      return { available: true, result: { success: false, error: first.error } };
-    return { available: true, result: { success: true, data: first.result } };
+    const forms = userScriptForms(code, crypto.randomUUID());
+    const run = async (js) => {
+      const results = await chrome.userScripts.execute({
+        target: { tabId, ...frameId !== undefined ? { frameIds: [frameId] } : {} },
+        js: [{ code: js }],
+        world
+      });
+      return frameId === undefined ? results[0] : results.find((r) => r.frameId === frameId) ?? (results.length === 1 && results[0]?.frameId === undefined ? results[0] : undefined);
+    };
+    const settled = (first2) => {
+      if (!first2)
+        return { available: true, result: { success: false, error: `no result for frame ${frameId ?? 0}` } };
+      if (first2.error)
+        return { available: true, result: { success: false, error: first2.error } };
+      return;
+    };
+    let first = await run(forms.expression);
+    let done = settled(first);
+    if (done)
+      return done;
+    if (first.result !== undefined && first.result !== null)
+      return { available: true, result: unwrapUserScriptResult(first.result) };
+    first = await run(forms.statement);
+    done = settled(first);
+    if (done)
+      return done;
+    if (first.result !== undefined && first.result !== null)
+      return { available: true, result: unwrapUserScriptResult(first.result) };
+    const ran = await run(forms.probe);
+    if (ran?.result === true)
+      return { available: true, result: { success: true, data: first.result } };
+    first = await run(forms.asyncBody);
+    done = settled(first);
+    if (done)
+      return done;
+    if (first.result !== undefined && first.result !== null)
+      return { available: true, result: unwrapUserScriptResult(first.result) };
+    return { available: true, result: { success: false, error: USER_SCRIPT_SYNTAX_ERROR } };
   } catch (err) {
     const message = err.message || String(err);
     if (/userScripts|Developer mode|Allow User Scripts|permission|undefined/i.test(message)) {
-      return { available: false };
+      return { available: false, reason: message };
     }
     return { available: true, result: { success: false, error: message } };
   }
 }
-async function executeEval(tabId, world, code) {
+async function executeEval(tabId, world, code, frameId) {
   const results = await chrome.scripting.executeScript({
-    target: { tabId },
+    target: { tabId, ...frameId !== undefined ? { frameIds: [frameId] } : {} },
     world,
     args: [code, IK_TT_POLICY, TT_POLICY_NAME],
     func: async (c, ttKey, ttName) => {
@@ -2794,7 +2847,8 @@ async function executeEval(tabId, world, code) {
       }
     }
   });
-  return results[0]?.result ?? { success: false, error: "no result" };
+  const first = frameId === undefined ? results[0] : results.find((r) => r.frameId === frameId) ?? (results.length === 1 && results[0]?.frameId === undefined ? results[0] : undefined);
+  return first?.result ?? { success: false, error: `no result for frame ${frameId ?? 0}` };
 }
 async function installCspBypassForTab(tabId) {
   const rule = buildCspBypassRule(tabId);
@@ -2812,19 +2866,6 @@ async function runWithCspStripBypass(tabId, world, run) {
   if (first.success || world !== "MAIN") {
     return first;
   }
-  if (isTrustedTypesError(first.error) && !isCspUnsafeEvalError(first.error)) {
-    const isolated = await run(tabId, "ISOLATED");
-    if (isolated.success) {
-      return {
-        ...isolated,
-        data: {
-          value: isolated.data,
-          trustedTypesFallback: true,
-          originalError: first.error
-        }
-      };
-    }
-  }
   if (!isCspUnsafeEvalError(first.error) && !isTrustedTypesError(first.error)) {
     return first;
   }
@@ -2838,7 +2879,12 @@ async function runWithCspStripBypass(tabId, world, run) {
       data: { originalError: first.error, cspBypassAttempted: false }
     };
   }
-  const retried = await run(tabId, "MAIN");
+  let retried;
+  try {
+    retried = await run(tabId, "MAIN");
+  } catch (err) {
+    retried = { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
   if (retried.success) {
     return {
       ...retried,
@@ -2863,20 +2909,31 @@ async function handleEvaluateActions(action, tabId) {
     return { success: false, error: `unknown evaluate action: ${action.type}` };
   }
   const code = action.code;
+  const frameId = action.frameId;
+  if (frameId !== undefined && (!Number.isSafeInteger(frameId) || frameId < 0)) {
+    return { success: false, error: "frameId must be a non-negative safe integer" };
+  }
+  if (typeof code !== "string" || !code.trim())
+    return { success: false, error: "evaluate requires JavaScript code" };
   const world = action.world === "ISOLATED" ? "ISOLATED" : "MAIN";
   const initialUserScriptWorld = world === "MAIN" ? "MAIN" : "USER_SCRIPT";
-  const userScriptAttempt = await executeWithUserScripts(tabId, initialUserScriptWorld, code);
-  if (userScriptAttempt.available) {
-    if (!userScriptAttempt.result?.success && world === "MAIN" && isCspEvalError(userScriptAttempt.result?.error)) {
-      const fallback = await executeWithUserScripts(tabId, "USER_SCRIPT", code);
-      if (fallback.available && (fallback.result?.success || !isCspEvalError(fallback.result?.error))) {
-        return fallback.result ?? { success: false, error: "no result" };
-      }
-    } else {
-      return userScriptAttempt.result ?? { success: false, error: "no result" };
-    }
+  const userScriptAttempt = await executeWithUserScripts(tabId, initialUserScriptWorld, code, frameId);
+  if (userScriptAttempt.available && (world !== "MAIN" || !isCspEvalError(userScriptAttempt.result?.error))) {
+    return userScriptAttempt.result ?? { success: false, error: "no result" };
   }
-  return runWithCspStripBypass(tabId, world, (t, w) => executeEval(t, w, code));
+  try {
+    const result = action.noCspReload === true ? await executeEval(tabId, world, code, frameId) : await runWithCspStripBypass(tabId, world, (t, w) => executeEval(t, w, code, frameId));
+    if (!result.success && world === "ISOLATED" && isCspEvalError(result.error)) {
+      return {
+        success: false,
+        error: `Isolated eval is unavailable: ${userScriptAttempt.reason ?? "the userScripts execution failed"}. Enable Allow User Scripts for this extension and reload it, or explicitly use eval --main for page-world access.`,
+        data: { originalError: result.error, requestedWorld: world, userScriptsAvailable: userScriptAttempt.available }
+      };
+    }
+    return result;
+  } catch (err) {
+    return { success: false, error: `eval in frame ${frameId ?? 0} failed: ${err.message}` };
+  }
 }
 
 // extension/src/background/capabilities/binary-sink.ts
@@ -4876,6 +4933,14 @@ async function routeAction(action, tabId) {
             reason: action.os === true ? "scene click requested trusted input" : "no DOM mutation after synthetic click"
           }
         },
+        tabId
+      };
+    }
+    const guardRefused = action.os !== true && !!(typeof osResult.data === "object" && osResult.data && osResult.data.hint);
+    if (guardRefused) {
+      return {
+        ...contentResult,
+        warning: `${contentResult.warning}; OS-level escalation skipped: ${osResult.error}`,
         tabId
       };
     }

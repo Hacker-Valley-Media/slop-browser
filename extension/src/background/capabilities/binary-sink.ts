@@ -148,7 +148,7 @@ async function prepareByteSource(
   if (!evalResult.success) return evalResult
 
   // The TT / CSP fallback paths wrap the value as
-  // { value, trustedTypesFallback | cspBypassApplied, originalError }; unwrap it
+  // { value, cspBypassApplied, originalError }; unwrap it
   // back to the bare ByteSource descriptor.
   let descriptor: any = evalResult.data
   if (

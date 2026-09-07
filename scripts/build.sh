@@ -20,6 +20,9 @@ done
 stamp_version() {
   local sha date pkg_version platform_targets agent_dylibs_bundled
   sha=$(git rev-parse --short HEAD 2>/dev/null || echo "dev")
+  if [[ "$sha" != "dev" ]] && [[ -n "$(git status --porcelain --untracked-files=normal 2>/dev/null)" ]]; then
+    sha="${sha}-dirty"
+  fi
   date=$(git show -s --format=%cs HEAD 2>/dev/null || date -u +%Y-%m-%d)
   pkg_version=$(grep '"version"' package.json | head -1 | sed -E 's/.*"version": *"([^"]+)".*/\1/')
   if [[ -f cli/version.ts && -z "$ORIG_VERSION_SOURCE" ]]; then

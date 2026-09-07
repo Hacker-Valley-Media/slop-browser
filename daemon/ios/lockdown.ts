@@ -277,7 +277,7 @@ async function openLockdownSession(udid: string): Promise<{ chan: LockdownChanne
     )
   }
   const deviceId = await resolveDeviceId(udid)
-  if (deviceId === undefined) throw new Error(`ios: device '${udid}' not visible to usbmuxd (plugged in?)`)
+  if (deviceId === undefined) throw new Error(`ios: device '${udid}' not visible to usbmuxd — plug it in over USB or put it on the same Wi-Fi as this Mac (a VPN such as Tailscale cannot reach the phone's pairing services)`)
 
   const raw = await connectUsbmuxPort(deviceId, LOCKDOWN_PORT)
   let chan = new LockdownChannel(raw)

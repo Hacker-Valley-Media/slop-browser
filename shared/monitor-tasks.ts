@@ -4,6 +4,8 @@ import {
   existsSync,
   linkSync,
   mkdirSync,
+  renameSync,
+  rmSync,
   readFileSync,
   readdirSync,
   statSync,
@@ -25,7 +27,7 @@ import {
 export const MONITOR_TASK_MODES = ["human-observe", "human-teach", "agent-record", "mixed"] as const
 export type MonitorTaskMode = typeof MONITOR_TASK_MODES[number]
 export type MonitorTaskActorKind = "human" | "agent" | "system" | "verifier" | "guard"
-export type MonitorTaskStatus = "active" | "paused" | "stopped" | "blocked" | "failed" | "aborted"
+export type MonitorTaskStatus = "active" | "paused" | "stopped" | "blocked" | "failed" | "aborted" | "completed"
 export type MonitorTaskSurface = "browser" | "macos"
 
 export type MonitorTaskPolicyRefs = {
@@ -99,6 +101,27 @@ export type MonitorTaskMeta = {
   policyRefs: MonitorTaskPolicyRefs
   transcript: MonitorTaskTranscriptState
   defaultExportMode: "summary" | "redacted" | "full"
+  checkpoint?: MonitorTaskCheckpoint
+  verification?: MonitorTaskVerification
+}
+
+export type MonitorTaskTarget = { contextId: string; group: string; tabId: number; frameId: number; origin: string }
+export type MonitorTaskCheckpoint = {
+  revision: number
+  updatedAt: number
+  owner: string
+  constraints: string[]
+  target: MonitorTaskTarget
+  nextAction: string
+  lessons: Array<{ text: string; source: string; contextId: string; origin: string; status: "verified" | "unverified" | "superseded" }>
+  checks: Array<{ id: string; expression: string }>
+}
+export type MonitorTaskVerification = {
+  revision: number
+  checkedAt: number
+  target: MonitorTaskTarget
+  passed: boolean
+  results: Array<{ id: string; passed: boolean; observedAt: number; value?: unknown; error?: string }>
 }
 
 export type MonitorTaskSourceEvent = {
@@ -197,6 +220,9 @@ export type MonitorTaskEvent = {
     | "task.resumed"
     | "task.stopped"
     | "task.blocked"
+    | "task.checkpoint"
+    | "task.verified"
+    | "task.completed"
     | "source.attach.requested"
     | "source.attached"
     | "source.detached"
@@ -424,6 +450,7 @@ export function ensureMonitorTasksRoot(): string {
 }
 
 export function getMonitorTaskDir(taskId: string): string {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(taskId)) throw new Error("invalid task id")
   return join(resolveMonitorTasksRoot().root, taskId)
 }
 
@@ -494,25 +521,79 @@ function nextTaskEventSeq(taskId: string): number {
 }
 
 export function readMonitorTaskMeta(taskId: string): MonitorTaskMeta | null {
-  const path = getMonitorTaskMetaPath(taskId)
+  // Name resolution probes this reader before matching instruction text.
+  let path: string
+  try { path = getMonitorTaskMetaPath(taskId) } catch { return null }
   if (!existsSync(path)) return null
   return safeParse<MonitorTaskMeta>(readFileSync(path, "utf-8"))
 }
 
+const heldTaskLocks = new Set<string>()
+
+function reclaimDeadTaskLock(lock: string): boolean {
+  const owner = safeParse<{ pid?: number; startedAt?: number }>(readFileSync(join(lock, "owner.json"), "utf-8"))
+  if (!owner || !Number.isSafeInteger(owner.pid) || (owner.pid as number) <= 0) return false
+  try { process.kill(owner.pid as number, 0); return false } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ESRCH") return false
+  }
+  const claim = join(lock, ".reclaim")
+  try { writeFileSync(claim, String(process.pid), { flag: "wx", mode: 0o600 }) } catch { return false }
+  try {
+    const current = safeParse<{ pid?: number; startedAt?: number }>(readFileSync(join(lock, "owner.json"), "utf-8"))
+    if (current?.pid !== owner.pid || current?.startedAt !== owner.startedAt) return false
+    try { process.kill(owner.pid as number, 0); return false } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ESRCH") return false
+    }
+    rmSync(lock, { recursive: true })
+    return true
+  } finally { if (existsSync(claim)) rmSync(claim, { force: true }) }
+}
+
+// Synchronous critical sections only. Contention is explicit, never a lost write.
+function withTaskLock<T>(taskId: string, work: () => T): T {
+  ensureMonitorTaskDir(taskId)
+  const lock = join(getMonitorTaskDir(taskId), ".mutation.lock")
+  if (heldTaskLocks.has(lock)) return work()
+  try { mkdirSync(lock, { mode: 0o700 }) } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err
+    let reclaimed = false
+    try { reclaimed = reclaimDeadTaskLock(lock) } catch {}
+    if (!reclaimed) throw new Error(`task busy: ${taskId}; retry after the other writer finishes. Automatic dead-owner reclaim did not apply; inspect ${lock}/owner.json before manual recovery.`)
+    try { mkdirSync(lock, { mode: 0o700 }) } catch (retryErr) {
+      if ((retryErr as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`task busy: ${taskId}; retry after the other writer finishes.`)
+      throw retryErr
+    }
+  }
+  heldTaskLocks.add(lock)
+  try {
+    writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 })
+    return work()
+  } finally { heldTaskLocks.delete(lock); rmSync(lock, { recursive: true }) }
+}
+
 export function writeMonitorTaskMeta(meta: MonitorTaskMeta): void {
-  ensureMonitorTaskDir(meta.taskId)
-  writeFileSync(getMonitorTaskMetaPath(meta.taskId), JSON.stringify(meta, null, 2) + "\n")
+  withTaskLock(meta.taskId, () => {
+    const path = getMonitorTaskMetaPath(meta.taskId)
+    const temp = `${path}.${randomUUID()}.tmp`
+    try {
+      writeFileSync(temp, JSON.stringify(meta, null, 2) + "\n", { flag: "wx", mode: 0o600 })
+      renameSync(temp, path)
+    } finally { rmSync(temp, { force: true }) }
+  })
 }
 
 export function updateMonitorTaskMeta(
   taskId: string,
   updater: (current: MonitorTaskMeta) => MonitorTaskMeta
 ): MonitorTaskMeta {
-  const current = readMonitorTaskMeta(taskId)
-  if (!current) throw new Error(`task not found: ${taskId}`)
-  const next = updater(current)
-  writeMonitorTaskMeta(next)
-  return next
+  return withTaskLock(taskId, () => {
+    const current = readMonitorTaskMeta(taskId)
+    if (!current) throw new Error(`task not found: ${taskId}`)
+    const next = updater(current)
+    if (next.taskId !== taskId) throw new Error("task updater cannot change task identity")
+    writeMonitorTaskMeta(next)
+    return next
+  })
 }
 
 export function appendMonitorTaskEvent(
@@ -525,7 +606,7 @@ export function appendMonitorTaskEvent(
     payload?: Record<string, unknown>
   } = {}
 ): MonitorTaskEvent {
-  ensureMonitorTaskDir(taskId)
+  return withTaskLock(taskId, () => {
   const event: MonitorTaskEvent = {
     version: 1,
     taskId,
@@ -538,10 +619,84 @@ export function appendMonitorTaskEvent(
   }
   appendJsonl(getMonitorTaskEventsPath(taskId), event)
   return event
+  })
 }
 
 export function readMonitorTaskEvents(taskId: string): MonitorTaskEvent[] {
   return readJsonl<MonitorTaskEvent>(getMonitorTaskEventsPath(taskId))
+}
+
+/** A checkpoint is authored state, not evidence that the objective is complete. */
+export function checkpointMonitorTask(taskId: string, input: unknown): MonitorTaskMeta {
+  const d = input as Record<string, any> | null
+  const text = (v: unknown): v is string => typeof v === "string" && !!v.trim() && v.length <= 16000
+  const natural = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0
+  const t = d?.target
+  if (!d || !natural(d.expectedRevision) || !text(d.owner) || !text(d.nextAction)
+    || !Array.isArray(d.constraints) || d.constraints.length > 100 || !d.constraints.every(text)
+    || !t || !text(t.contextId) || !text(t.group) || !natural(t.tabId) || t.tabId === 0 || !natural(t.frameId)
+    || !text(t.origin)) throw new Error("checkpoint requires expectedRevision, owner, constraints[], nextAction and target {contextId,group,tabId,frameId,origin}")
+  try { if (!/^https?:$/.test(new URL(t.origin).protocol) || new URL(t.origin).origin !== t.origin) throw 0 }
+  catch { throw new Error("target origin must be an exact http(s) origin, without a path") }
+  if (!Array.isArray(d.checks) || d.checks.length > 50 || !d.checks.every((c: any) => c && text(c.id) && text(c.expression))
+    || new Set(d.checks.map((c: any) => c.id)).size !== d.checks.length) throw new Error("checks must contain unique ids and nonempty JavaScript expressions (maximum 50)")
+  if (!Array.isArray(d.lessons) || d.lessons.length > 100 || !d.lessons.every((l: any) => l && text(l.text) && text(l.source) && text(l.contextId) && text(l.origin) && ["verified", "unverified", "superseded"].includes(l.status))) throw new Error("lessons require text, source, contextId, origin and verified|unverified|superseded status")
+  return updateMonitorTaskMeta(taskId, current => {
+    const revision = current.checkpoint?.revision ?? 0
+    if (revision !== d.expectedRevision) throw new Error(`stale checkpoint: expected revision ${d.expectedRevision}, current ${revision}; resume before writing`)
+    const checkpoint: MonitorTaskCheckpoint = {
+      revision: revision + 1, updatedAt: Date.now(), owner: d.owner, constraints: [...d.constraints], nextAction: d.nextAction,
+      target: { contextId: t.contextId, group: t.group, tabId: t.tabId, frameId: t.frameId, origin: t.origin },
+      checks: d.checks.map((c: any) => ({ id: c.id, expression: c.expression })),
+      lessons: d.lessons.map((l: any) => ({ text: l.text, source: l.source, contextId: l.contextId, origin: l.origin, status: l.status })),
+    }
+    appendMonitorTaskEvent(taskId, "task.checkpoint", { actor: "agent", payload: { revision: checkpoint.revision, owner: checkpoint.owner } })
+    return { ...current, status: "active", endedAt: undefined, checkpoint, verification: undefined }
+  })
+}
+
+export function resumeMonitorTask(taskId: string) {
+  const task = readMonitorTaskMeta(taskId)
+  if (!task) throw new Error(`task not found: ${taskId}`)
+  const c = task.checkpoint
+  return {
+    taskId, objective: task.instruction, status: task.status, durable: task.durable,
+    ...(c ? { ...c, lessons: c.lessons.filter(l => l.status === "verified" && l.contextId === c.target.contextId && l.origin === c.target.origin) } : { revision: 0 }),
+    verification: task.verification,
+    evidenceScope: "Declared browser predicates only; checkpoint text and lesson status are author supplied.",
+  }
+}
+
+/** Evaluate outside the disk lock, then reject a checkpoint changed during verification. */
+export async function verifyMonitorTask(
+  taskId: string,
+  evaluate: (target: MonitorTaskTarget, code: string) => Promise<{ success: boolean; data?: unknown; error?: string }>,
+  complete = false,
+): Promise<MonitorTaskMeta> {
+  const task = readMonitorTaskMeta(taskId)
+  if (!task) throw new Error(`task not found: ${taskId}`)
+  const c = task.checkpoint
+  if (!c?.checks.length) throw new Error("task has no declared checks; checkpoint before verification or completion")
+  if (complete && task.status !== "active") throw new Error(`task is ${task.status}; checkpoint it before completion`)
+  const results: MonitorTaskVerification["results"] = []
+  for (const check of c.checks) {
+    // Each check tests the origin in the same frame and execution as its predicate.
+    const code = `(async()=>{if(location.origin!==${JSON.stringify(c.target.origin)})throw new Error('task target origin changed');return await (${check.expression}\n)})()`
+    try {
+      const result = await evaluate(c.target, code)
+      results.push({ id: check.id, passed: result.success && result.data === true, observedAt: Date.now(), value: result.data, ...(result.error ? { error: result.error } : {}) })
+    } catch (err) { results.push({ id: check.id, passed: false, observedAt: Date.now(), error: err instanceof Error ? err.message : String(err) }) }
+  }
+  const verification: MonitorTaskVerification = { revision: c.revision, checkedAt: Date.now(), target: c.target, passed: results.every(r => r.passed), results }
+  return updateMonitorTaskMeta(taskId, current => {
+    if (JSON.stringify(current.checkpoint) !== JSON.stringify(c)) throw new Error("stale verification: checkpoint changed while checks ran; resume and verify again")
+    if (current.status !== task.status || current.endedAt !== task.endedAt) throw new Error("stale verification: task lifecycle changed while checks ran; resume before verifying again")
+    const completed = complete && verification.passed
+    appendMonitorTaskEvent(taskId, completed ? "task.completed" : "task.verified", { actor: "verifier", payload: { verification } })
+    return complete
+      ? { ...current, verification, status: completed ? "completed" : "active", endedAt: completed ? verification.checkedAt : undefined }
+      : { ...current, verification }
+  })
 }
 
 export function appendMonitorTaskSourceEvent(event: MonitorTaskSourceEvent): void {

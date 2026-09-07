@@ -30,4 +30,9 @@ consumes (harvested from module source: `includes`/`indexOf`/`flagPresent`/
 3. **Do not special-case the strict check per command.** The only escape is
    `INTERCEPTOR_LAX_FLAGS=1` (warning instead of exit 1). `macos`, `ios`,
    `mcp`, and `update` are outside the map on purpose and stay unnormalized.
-4. Update `cli/help.ts` and the skill command catalogs in the same change.
+4. **`--frame` is a global browser flag.** `parseFrameFlag` reads it before or
+   after the command (`--frame=N` too), `filterGlobalFlags` strips it from
+   browser argv so it never enters `eval` code or `type` text, and the native
+   `macos`/`ios` grammars never receive it. `eval` builds its JavaScript from
+   the positional span only, so a trailing `--json` never becomes code.
+5. Update `cli/help.ts` and the skill command catalogs in the same change.

@@ -1,6 +1,6 @@
 ---
 name: interceptor
-description: "Choose the right Interceptor surface. Use interceptor-browser for page DOM, network, browser tabs, rich editors, screenshots, and browser automation. Use interceptor-macos for native apps, browser chrome, URL bars, OS dialogs, cross-app routing, AX trees, native screenshots, Apple Events, trusted OS input, macOS Electron CDP/app web-content control, and in-process app runtime control. Background-first by default; focus changes require explicit opt-in."
+description: "Choose the right Interceptor surface. Use interceptor-browser for page DOM, network, browser tabs, rich editors, screenshots, and browser automation. Use interceptor-macos for native apps, browser chrome, URL bars, OS dialogs, cross-app routing, AX trees, native screenshots, Apple Events, trusted OS input, macOS Electron CDP/app web-content control, and in-process app runtime control. Use interceptor-ios for apps on an owned, unlocked, Developer-Mode iPhone. Use interceptor-research for deep multi-source web research. Background-first by default; focus changes require explicit opt-in."
 metadata:
   short-description: Choose the right Interceptor surface
 ---
@@ -21,6 +21,7 @@ Use this as the routing skill before loading a surface-specific skill.
 | Open or control a named app such as Brave, Mail, Finder, Signal, or Cursor | `interceptor-macos` |
 | Backgrounded, occluded, minimized, or cross-Space app capture | `interceptor-macos` |
 | Deep web research: investigate a topic across many sources with breadth + verification | `interceptor-research` |
+| Owned physical iPhone, app automation, runner state and device services | `interceptor-ios` |
 | Capabilities added by an installed extension (operator-supplied) | run `interceptor extensions list`, then load the extension's own skill (`interceptor-ext-<name>`) |
 
 ## Core Rules
@@ -41,4 +42,5 @@ Use this as the routing skill before loading a surface-specific skill.
 
 - Load `interceptor-browser` for browser page content, network, tabs, scene graphs, and browser screenshots.
 - Load `interceptor-macos` for native apps, browser chrome, OS dialogs, window capture, AX trees, Apple Events, Electron app CDP/app attach, and in-process native agent control.
+- Load `interceptor-ios` for an owned, unlocked, Developer-Mode iPhone. Disconnected unlock cannot bootstrap its runner.
 - Load `interceptor-research` for deep web research — investigating a topic across many sources with a planner loop, an on-disk source ledger, and adversarial verification (methodology layered on the browser surface). Pull the playbook any time with `interceptor research`.

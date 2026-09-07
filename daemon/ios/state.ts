@@ -19,7 +19,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 export type IosInstalled = {
   installedAt?: number
@@ -53,7 +53,12 @@ function stateDir(): string {
   try { mkdirSync(dir, { recursive: true }) } catch {}
   return dir
 }
-function statePath(): string { return join(stateDir(), "state.json") }
+function statePath(): string {
+  const override = process.env.INTERCEPTOR_IOS_STATE_PATH
+  if (!override) return join(stateDir(), "state.json")
+  try { mkdirSync(dirname(override), { recursive: true }) } catch {}
+  return override
+}
 
 export function loadIosState(): IosState {
   try {

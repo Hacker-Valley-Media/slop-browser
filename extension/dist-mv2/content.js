@@ -1814,9 +1814,10 @@ async function handleClick(action) {
   if (!el)
     return { success: false, error: `stale element [${action.index}] — run interceptor state to refresh` };
   scrollIntoViewIfNeeded(el);
+  const mutation = waitForMutation(200);
   dispatchClickSequence(el, action.x, action.y);
   const clickMsg = `clicked [${action.ref || action.index}]${action.x !== undefined ? ` at (${action.x},${action.y})` : ""}`;
-  const mutated = await waitForMutation(200);
+  const mutated = await mutation;
   if (!mutated) {
     return { success: true, data: clickMsg, warning: "no DOM change after click — if the site requires trusted events, try: interceptor click --trusted " + (action.ref || action.index) };
   }
@@ -1841,9 +1842,10 @@ async function handleClickSelector(action) {
     };
   }
   scrollIntoViewIfNeeded(el);
+  const mutation = waitForMutation(200);
   dispatchClickSequence(el, action.x, action.y);
   const clickedRef = getOrAssignRef(el);
-  const mutated = await waitForMutation(200);
+  const mutated = await mutation;
   const msg = `clicked ${clickedRef} — ${selector}[${nth}] of ${matches.length}`;
   if (!mutated) {
     return { success: true, data: msg, refId: clickedRef, warning: `no DOM change after click — if the site requires trusted events, try: interceptor click --trusted ${clickedRef}` };
@@ -4416,13 +4418,10 @@ async function handleCanvasAction(action) {
             data: { id, clicked: true, at: { x: cx, y: cy }, method: "synthetic" }
           };
         }
-        if (target.element)
-          clickElementCenter2(target.element);
-        else {
-          const { clickAtViewport: clickAtViewport3 } = await Promise.resolve().then(() => (init_ops(), exports_ops));
-          clickAtViewport3(cx, cy);
-        }
-        const mutated = await waitForMutation(200);
+        const click = target.element ? () => clickElementCenter2(target.element) : await Promise.resolve().then(() => (init_ops(), exports_ops)).then(({ clickAtViewport: clickAtViewport3 }) => () => clickAtViewport3(cx, cy));
+        const mutation = waitForMutation(200);
+        click();
+        const mutated = await mutation;
         const afterSelection = canvasSelected(profileOverride);
         const changed = mutated || selectionChanged(beforeSelection.data, afterSelection.data);
         return {
@@ -4755,11 +4754,9 @@ async function handleAction(action) {
   if (wantChanges)
     cacheSnapshot();
   const result = await executeAction(action);
-  const sw = getStaleWarning();
-  if (sw && result.success)
-    result.warning = sw;
-  else if (warnDirty && result.success)
-    result.warning = "DOM has changed since last state read";
+  const note = getStaleWarning() ?? (warnDirty ? "DOM has changed since last state read" : null);
+  if (note && result.success)
+    result.warning = result.warning ? `${result.warning}; ${note}` : note;
   if (wantChanges && result.success) {
     const diffResult = computeSnapshotDiff();
     if (diffResult.success)

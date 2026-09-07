@@ -23,7 +23,7 @@ const FENCE_VERBS = new Set([
   "text", "html", "tree", "read", "find", "search", "inspect", "net", "network",
   "headers", "table", "links", "images", "forms", "query", "state", "meta",
   "info", "page_info", "diff", "canvas", "ocr", "storage", "cookies", "downloads",
-  "bookmarks", "history",
+  "bookmarks", "history", "monitor",
   // macos
   "value", "log", "vision", "nlp", "files",
   // shared verb names used across surfaces (macos/ios tree/text/find/inspect/read

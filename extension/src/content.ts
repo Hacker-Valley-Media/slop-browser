@@ -66,9 +66,10 @@ async function handleAction(action: Action): Promise<ActionResult> {
   const wantChanges = !!(action.changes)
   if (wantChanges) cacheSnapshot()
   const result = await executeAction(action)
-  const sw = getStaleWarning()
-  if (sw && result.success) result.warning = sw
-  else if (warnDirty && result.success) result.warning = "DOM has changed since last state read"
+  // Append the page-state note; never replace the action's own warning (a
+  // replaced "no DOM change" hid every missed click after the first, 2026-09-07).
+  const note = getStaleWarning() ?? (warnDirty ? "DOM has changed since last state read" : null)
+  if (note && result.success) result.warning = result.warning ? `${result.warning}; ${note}` : note
   if (wantChanges && result.success) {
     const diffResult = computeSnapshotDiff()
     if (diffResult.success) (result as Record<string, unknown>).changes = diffResult.data

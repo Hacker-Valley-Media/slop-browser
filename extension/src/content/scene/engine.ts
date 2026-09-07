@@ -275,12 +275,12 @@ export async function handleCanvasAction(action: Action): Promise<ContentResult>
             data: { id, clicked: true, at: { x: cx, y: cy }, method: "synthetic" }
           }
         }
-        if (target.element) clickElementCenter(target.element)
-        else {
-          const { clickAtViewport } = await import("./ops")
-          clickAtViewport(cx, cy)
-        }
-        const mutated = await waitForMutation(200)
+        const click = target.element
+          ? () => clickElementCenter(target.element!)
+          : await import("./ops").then(({ clickAtViewport }) => () => clickAtViewport(cx, cy))
+        const mutation = waitForMutation(200)  // observe before the synchronous dispatch
+        click()
+        const mutated = await mutation
         const afterSelection = canvasSelected(profileOverride)
         const changed = mutated || selectionChanged(beforeSelection.data, afterSelection.data)
         return {

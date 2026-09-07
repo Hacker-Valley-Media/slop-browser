@@ -15,6 +15,8 @@
  * native.ts, cdp.ts, ios*.ts). Keep in lockstep when verbs are added.
  */
 
+import { normalizeArgsSplit } from "../normalize"
+
 export type Surface = "browser" | "macos" | "ios" | "local"
 export type Tier = "read" | "mutate" | "destructive" | "exec"
 
@@ -148,6 +150,17 @@ export function classify(surface: Surface, verb: string, args: string[]): Classi
   const sub = subVerbOf(args)
   const key3 = `${surface}:${verb}:${sub}`
   const key2 = `${surface}:${verb}`
+
+  if ((surface === "browser" || surface === "local") && verb === "monitor") {
+    const normalized = normalizeArgsSplit([verb, ...args]).argv
+    if (normalized[1] === "task") {
+      const op = normalized[2]
+      if (op === "resume") return mk("read")
+      if (["create", "checkpoint", "attach", "snapshot", "repair", "quality", "diagnose", "compile-blueprint"].includes(op)) return mk("mutate")
+      // verify/complete execute stored author-supplied JavaScript. Unknown task verbs fail closed.
+      return mk("exec")
+    }
+  }
 
   // 1. exec (highest) — exact sub, then whole verb.
   if (EXEC[key3]) return mk("exec")

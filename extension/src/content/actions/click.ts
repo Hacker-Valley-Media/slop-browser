@@ -12,9 +12,13 @@ export async function handleClick(action: Action): Promise<ActionResult> {
   const el = resolveElement(action.index as number | undefined, action.ref as string | undefined)
   if (!el) return { success: false, error: `stale element [${action.index}] — run interceptor state to refresh` }
   scrollIntoViewIfNeeded(el)
+  // Register the observer before the dispatch: both dispatch paths are
+  // synchronous, so a listener that mutates inline would otherwise be missed
+  // and the click would escalate as "no DOM change" (review 2026-09-07).
+  const mutation = waitForMutation(200)
   dispatchClickSequence(el, action.x as number | undefined, action.y as number | undefined)
   const clickMsg = `clicked [${action.ref || action.index}]${action.x !== undefined ? ` at (${action.x},${action.y})` : ""}`
-  const mutated = await waitForMutation(200)
+  const mutated = await mutation
   if (!mutated) {
     return { success: true, data: clickMsg, warning: "no DOM change after click — if the site requires trusted events, try: interceptor click --trusted " + (action.ref || action.index) }
   }
@@ -52,9 +56,10 @@ export async function handleClickSelector(action: Action): Promise<ActionResult>
     }
   }
   scrollIntoViewIfNeeded(el)
+  const mutation = waitForMutation(200)
   dispatchClickSequence(el, action.x as number | undefined, action.y as number | undefined)
   const clickedRef = getOrAssignRef(el)
-  const mutated = await waitForMutation(200)
+  const mutated = await mutation
   const msg = `clicked ${clickedRef} — ${selector}[${nth}] of ${matches.length}`
   if (!mutated) {
     return { success: true, data: msg, refId: clickedRef, warning: `no DOM change after click — if the site requires trusted events, try: interceptor click --trusted ${clickedRef}` }

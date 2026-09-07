@@ -33,7 +33,12 @@ import {
   repairMonitorTask,
   synthesizeMonitorTaskTranscript,
   validateMonitorTaskMode,
+  createMonitorTask,
+  checkpointMonitorTask,
+  resumeMonitorTask,
+  verifyMonitorTask,
 } from "../../shared/monitor-tasks"
+import { sendCommand, sendCommandWs } from "../transport"
 import { fromMonitorEvents, writeExport } from "../../shared/exports"
 import { VERSION } from "../version"
 
@@ -662,7 +667,7 @@ function withBodies(planText: string, sid: string): string {
   return planText.replace(/^# interceptor net log /gm, "interceptor net log ")
 }
 
-export async function parseMonitorCommand(filtered: string[], jsonMode = false): Promise<Action | null> {
+export async function parseMonitorCommand(filtered: string[], jsonMode = false, useWs = false): Promise<Action | null> {
   const sub = filtered[1]
   if (!sub || sub === "help") {
     console.log(MONITOR_HELP)
@@ -774,6 +779,38 @@ export async function parseMonitorCommand(filtered: string[], jsonMode = false):
 
     case "task": {
       const op = filtered[2]
+      if (["create", "checkpoint", "resume", "verify", "complete"].includes(op)) {
+        try {
+          const ref = filtered[3]
+          if (!ref || ref.startsWith("--")) throw new Error(`monitor task ${op} requires ${op === "create" ? "a quoted objective" : "a task id or name"}`)
+          let result: unknown
+          if (op === "create") {
+            result = createMonitorTask({ instruction: ref, mode: "agent-record" })
+          } else {
+            const taskId = resolveMonitorTaskId(ref)
+            if (op === "checkpoint") {
+              const file = flagValue(filtered, "--file")
+              if (!file) throw new Error("checkpoint requires --file <checkpoint.json>")
+              checkpointMonitorTask(taskId, JSON.parse(readFileSync(file, "utf8")))
+            } else if (op === "verify" || op === "complete") {
+              const send = useWs ? sendCommandWs : sendCommand
+              const task = await verifyMonitorTask(taskId, async (target, code) => {
+                const response = await send({ type: "evaluate", code, world: "MAIN", noCspReload: true, group: target.group, groupSoft: false, frameId: target.frameId }, target.tabId, target.contextId)
+                return response.result
+              }, op === "complete")
+              if (!task.verification?.passed) process.exitCode = 1
+            }
+            result = resumeMonitorTask(taskId)
+          }
+          console.log(JSON.stringify(result, null, 2))
+        } catch (err) {
+          const error = err instanceof Error ? err.message : String(err)
+          if (jsonMode) console.log(JSON.stringify({ success: false, error }))
+          else console.error(`error: ${error}`)
+          process.exitCode = 1
+        }
+        return null
+      }
       if (op === "repair") {
         const taskId = filtered[3]
         if (!taskId) {

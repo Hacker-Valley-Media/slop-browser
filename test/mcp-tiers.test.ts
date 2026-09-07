@@ -3,6 +3,17 @@ import { describe, expect, test } from "bun:test"
 import { classify, gate, parseAllow } from "../cli/mcp/tiers"
 
 describe("classify — tier by (surface, verb, sub-verb)", () => {
+  test("task verification is arbitrary exec even with reordered flags", () => {
+    for (const surface of ["browser", "local"] as const) {
+      for (const op of ["verify", "complete", "unknown"]) {
+        const c = classify(surface, "monitor", ["--json", "task", op, "task-id"])
+        expect(c.tier).toBe("exec")
+        expect(gate(c, parseAllow(undefined), true).allowed).toBe(false)
+      }
+      expect(classify(surface, "monitor", ["task", "resume", "task-id"]).tier).toBe("read")
+      expect(classify(surface, "monitor", ["--file", "x", "task", "checkpoint", "task-id"]).tier).toBe("mutate")
+    }
+  })
   test("browser reads/mutates/exec", () => {
     expect(classify("browser", "tree", []).tier).toBe("read")
     expect(classify("browser", "text", []).tier).toBe("read")

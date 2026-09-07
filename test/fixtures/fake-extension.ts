@@ -6,6 +6,7 @@
 //   navigate             → success
 //   tab_create           → failure (drives the compound `open --json` path)
 //   anything else        → the stale-snapshot "unknown action type" failure
+import { appendFileSync } from "node:fs"
 const port = process.env.FAKE_EXT_WS_PORT
 const contextId = process.env.FAKE_EXT_CONTEXT ?? "exit-code-test"
 const version = process.env.FAKE_EXT_VERSION ?? "0.0.0-fake"
@@ -16,12 +17,20 @@ ws.onopen = () => {
   ws.send(JSON.stringify({ type: "extension", contextId, version }))
 }
 ws.onmessage = (event) => {
-  let msg: { id?: string; type?: string; action?: { type?: string } }
+  let msg: { id?: string; type?: string; action?: { type?: string; ref?: string; code?: string } }
   try { msg = JSON.parse(String(event.data)) } catch { return }
   if (msg.type === "context_registered") { console.log("registered"); return }
   if (!msg.id || !msg.action) return
+  if (process.env.FAKE_EXT_ACTIONS) appendFileSync(process.env.FAKE_EXT_ACTIONS, JSON.stringify(msg.action) + "\n")
+  if (msg.action.ref === "e900") return // Deliberately no response: uncertain delivery.
   const t = msg.action.type
-  const result = t === "go_back" || t === "go_forward"
+  const result = msg.action.ref === "e901"
+    ? { success: false, error: "The message channel is closed" }
+    : t === "input_text"
+      ? { success: true }
+    : t === "evaluate"
+      ? { success: true, data: msg.action.code?.includes("task target origin changed") ? msg.action.code.includes("fixturePass") : msg.action }
+    : t === "go_back" || t === "go_forward"
     ? { success: false, error: "Cannot find a next page in history." }
     : t === "navigate"
       ? { success: true }

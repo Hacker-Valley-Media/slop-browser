@@ -18,10 +18,11 @@ describe("buildFilteredArgs", () => {
   test("removes global --json in leading positions", () => {
     expect(buildFilteredArgs(["--json", "status"])).toEqual(["status"])
     expect(buildFilteredArgs(["status", "--json"])).toEqual(["status"])
+    expect(buildFilteredArgs(["--frame", "0", "--json", "eval", "1+1"])).toEqual(["eval", "1+1"])
   })
 
   test("preserves command-local --json outside leading global positions", () => {
-    expect(buildFilteredArgs(["batch", "run", "--json", "payload"])).toEqual(["batch", "run", "--json", "payload"])
+    expect(buildFilteredArgs(["macos", "translate", "batch", "--json", "payload"])).toEqual(["macos", "translate", "batch", "--json", "payload"])
   })
 
   test("preserves global-looking tokens after the option terminator", () => {

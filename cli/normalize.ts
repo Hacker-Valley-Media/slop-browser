@@ -72,7 +72,7 @@ const DATA = ["--since"]
 const META = ["--css", "--frame-ids", "--since"]
 const SAVE = ["--out", "--chunk-size"]
 const BATCH = ["--timeout"]
-const MONITOR = ["--capture", "--format", "--guard-policy", "--instruction", "--mode", "--out", "--retention-policy", "--session", "--task", "--verifier-policy", "--persist-bodies"]
+const MONITOR = ["--capture", "--file", "--format", "--guard-policy", "--instruction", "--mode", "--out", "--retention-policy", "--session", "--task", "--verifier-policy", "--persist-bodies"]
 const SCENE = ["--profile", "--slide", "--type"]
 const SSE = ["--filter", "--limit", "--timeout"]
 const RESEARCH = ["--dir", "--effort", "--note", "--slug", "--status"]
@@ -200,8 +200,7 @@ function rejectUnknownFlag(cmd: string, tok: string): void {
     }
     return
   }
-  console.error(`error: ${msg}`)
-  process.exit(1)
+  throw new Error(msg)
 }
 
 export type NormalizedArgs = { argv: string[]; positionalCount: number }
@@ -240,8 +239,7 @@ export function normalizeArgsSplit(filtered: string[]): NormalizedArgs {
           // A boolean flag with a value would travel as one raw token no
           // parser recognizes — `net log --redact-auth=true` would export
           // credentials unredacted and exit 0. Never legal, so no lax mode.
-          console.error(`error: flag '${name}' for '${cmd}' does not take a value (use '${name}').`)
-          process.exit(1)
+          throw new Error(`flag '${name}' for '${cmd}' does not take a value (use '${name}').`)
         }
         flags.push(tok)
         continue
@@ -263,8 +261,7 @@ export function normalizeArgsSplit(filtered: string[]): NormalizedArgs {
   if (cmd === "tab" && positionals[0] !== "new") {
     const unsupported = TAB_BOOL.find((flag) => flags.includes(flag))
     if (unsupported) {
-      console.error(`error: flag '${unsupported}' is only valid with 'tab new'.`)
-      process.exit(1)
+      throw new Error(`flag '${unsupported}' is only valid with 'tab new'.`)
     }
   }
 
