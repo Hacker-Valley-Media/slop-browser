@@ -32,7 +32,7 @@ import { parseBatchCommand } from "./commands/batch"
 import { parseMonitorCommand } from "./commands/monitor"
 import { parseSceneCommand } from "./commands/scene"
 import { parseSseCommand } from "./commands/sse"
-import { parseChromeCommand } from "./commands/chrome"
+import { parseBrowserCommand } from "./commands/browser"
 import { runCompoundCommand, webSearchQuery, webSearchTimeout } from "./commands/compound"
 import { runOverride } from "./commands/override"
 import { runMacosCommand } from "./commands/macos"
@@ -77,7 +77,7 @@ const POWER_CMDS = new Set(["keepawake", "idle"])
 const DELEGATE_CMDS = new Set(["delegate"])
 const SCENE_CMDS = new Set(["scene"])
 const SSE_CMDS = new Set(["sse"])
-const CHROME_CMDS = new Set(["chrome"])
+const BROWSER_CMDS = new Set(["browser"])
 const COMPOUND_CMDS = new Set(["open", "read", "act", "inspect", "websearch", "search"])
 const OVERRIDE_CMDS = new Set(["override"])
 const MACOS_CMDS = new Set(["macos"])
@@ -108,7 +108,7 @@ const ALL_KNOWN_CMDS = new Set<string>([
   ...COMPOUND_CMDS, ...OVERRIDE_CMDS, ...MACOS_CMDS, ...IOS_CMDS,
   ...UPDATE_CMDS, ...UPGRADE_CMDS, ...INIT_CMDS, ...RESEARCH_CMDS, ...EXTENSIONS_CMDS,
   ...SKILLS_CMDS, ...MANIFEST_CMDS, ...DIAGNOSE_CMDS, ...MCP_CMDS, ...DAEMON_CMDS,
-  ...POWER_CMDS, ...DELEGATE_CMDS, ...CHROME_CMDS,
+  ...POWER_CMDS, ...DELEGATE_CMDS, ...BROWSER_CMDS,
   "help", "contexts",
 ])
 
@@ -422,7 +422,7 @@ async function main() {
   else if (MONITOR_CMDS.has(cmd)) action = await parseMonitorCommand(filtered, jsonMode, useWs)
   else if (SCENE_CMDS.has(cmd))   action = await parseSceneCommand(filtered, jsonMode)
   else if (SSE_CMDS.has(cmd))     action = parseSseCommand(filtered)
-  else if (CHROME_CMDS.has(cmd))  action = parseChromeCommand(filtered)
+  else if (BROWSER_CMDS.has(cmd)) action = parseBrowserCommand(filtered)
   else {
     // Unreachable: ALL_KNOWN_CMDS guard above rejects unknown commands
     // before this dispatch chain runs.

@@ -28,7 +28,7 @@ import { assertNoInstallMaintenance } from "../shared/install-maintenance"
 import { VERSION } from "../cli/version"
 import { actionLogSummary, inboundLogSummary, outboundLogSummary } from "./redact"
 import * as secrets from "./secrets"
-import * as chromeCreds from "./chrome-creds"
+import * as browserCreds from "./browser-creds"
 import { CdpManager, CDP_ACTION_TYPES } from "./cdp/manager"
 import { CDP_CONTEXT_PREFIX } from "../shared/cdp-app"
 import { IosManager } from "./ios/manager"
@@ -441,8 +441,8 @@ function dispatchToExtension(id: string, request: CliRequest, socket: Bun.Socket
 }
 
 const SECRET_DELIVERY_TYPES = new Set(["macos_type", "macos_authdialog", "input_text", "find_and_type", "os_type", "ios_type", "ios_keys", "ios_unlock", "macos_sudo"])
-// issue #248: Chrome saved-login fills go to browser input legs only.
-const CHROME_LOGIN_TYPES = new Set(["input_text", "find_and_type", "os_type"])
+// issue #248: browser saved-login fills go to browser input legs only.
+const BROWSER_LOGIN_TYPES = new Set(["input_text", "find_and_type", "os_type"])
 
 const bunVault = new secrets.BunSecretsVault()
 
@@ -606,31 +606,33 @@ async function handleSecretAction(action: Record<string, unknown>, request: CliR
 }
 
 /**
- * issue #248: read-only Chrome saved-login enumeration. Exposes host +
- * username + which profile only — never the decrypted password. Refused for
- * model callers (INTERCEPTOR_MCP): a model must not enumerate the user's
- * saved accounts. The fill path (`type --chrome-login`) is unaffected because
- * it never returns the value.
+ * issue #248: read-only browser saved-login enumeration across the installed
+ * Chromium browsers (or one named browser). Exposes host + username + browser
+ * only — never the decrypted password. The model-caller refusal lives in the
+ * CLI parser (cli/commands/browser.ts), where the INTERCEPTOR_MCP marker
+ * actually lands; the daemon never receives it. The fill path
+ * (`type --browser-login`) is unaffected because it never returns the value.
  */
-async function handleChromeCredsAction(action: Record<string, unknown>): Promise<DaemonResult> {
-  if (process.env.INTERCEPTOR_MCP === "1") {
-    return { success: false, error: "chrome creds enumeration is refused over MCP (a model must not list saved accounts); use `type --chrome-login <host>` to fill" }
-  }
+async function handleBrowserCredsAction(action: Record<string, unknown>): Promise<DaemonResult> {
   const sub = typeof action.sub === "string" ? action.sub : "list"
+  const browserKey = typeof action.browser === "string" && action.browser ? action.browser : undefined
   try {
     if (sub === "status") {
-      const profiles = chromeCreds.listProfiles()
-      return { success: true, data: { profiles, count: profiles.length } }
+      // Which installed Chromium browsers hold a Login Data store, with their
+      // profiles. Dynamic — nothing is hardcoded as "the" browser.
+      const browsers = browserKey ? [browserCreds.browserByKey(browserKey)] : browserCreds.detectInstalledBrowsers()
+      const data = browsers.map((b) => ({ browser: b.key, label: b.label, profiles: browserCreds.listProfiles(b) }))
+      return { success: true, data: { browsers: data, count: data.length } }
     }
     if (sub === "list") {
       const host = typeof action.host === "string" && action.host ? action.host : undefined
-      const rows = chromeCreds.listLogins(host)
-      const data = rows.map((r) => ({ profile: r.profile, host: r.host, username: r.username, hasPassword: r.hasPassword }))
+      const rows = browserCreds.listLogins(host, browserKey)
+      const data = rows.map((r) => ({ browser: r.browser, profile: r.profile, host: r.host, username: r.username, hasPassword: r.hasPassword }))
       return { success: true, data }
     }
-    return { success: false, error: `unknown chrome creds verb '${sub}' (list|status)` }
+    return { success: false, error: `unknown browser creds verb '${sub}' (list|status)` }
   } catch (err) {
-    const e = err as chromeCreds.ChromeCredsError
+    const e = err as browserCreds.BrowserCredsError
     return { success: false, error: e.message, code: e.code }
   }
 }
@@ -718,7 +720,7 @@ async function deliverWithSecret(id: string, action: Record<string, unknown>, re
  * delivered action carries `sensitive:true` (redaction) and never the source
  * field, so the value only ever appears in-process. `stripFields` names the
  * source markers to remove from the outgoing action (e.g. "secret",
- * "chromeLogin").
+ * "browserLogin").
  */
 async function deliverResolvedValue(id: string, action: Record<string, unknown>, request: CliRequest, socket: Bun.Socket<undefined>, actionType: string, value: string, stripFields: string[]): Promise<void> {
   const reply = (result: DaemonResult) => socketWriteFramed(socket, JSON.stringify({ id, result }))
@@ -769,38 +771,41 @@ async function deliverResolvedValue(id: string, action: Record<string, unknown>,
  * own origin host must match too. This is the whole allowlist — an agent on
  * one site can never pull another site's saved password.
  */
-async function deliverWithChromeLogin(id: string, action: Record<string, unknown>, request: CliRequest, socket: Bun.Socket<undefined>, actionType: string): Promise<void> {
+async function deliverWithBrowserLogin(id: string, action: Record<string, unknown>, request: CliRequest, socket: Bun.Socket<undefined>, actionType: string): Promise<void> {
   const reply = (result: DaemonResult) => socketWriteFramed(socket, JSON.stringify({ id, result }))
-  if (!CHROME_LOGIN_TYPES.has(actionType)) { reply({ success: false, error: `--chrome-login is not supported for '${actionType}'` }); return }
-  const spec = action.chromeLogin as { host?: unknown; field?: unknown } | undefined
+  if (!BROWSER_LOGIN_TYPES.has(actionType)) { reply({ success: false, error: `--browser-login is not supported for '${actionType}'` }); return }
+  const spec = action.browserLogin as { host?: unknown; field?: unknown; browser?: unknown } | undefined
   const host = spec && typeof spec.host === "string" ? spec.host : ""
-  const field: chromeCreds.ChromeLoginField = spec && spec.field === "user" ? "user" : "pass"
-  if (!host) { reply({ success: false, error: "--chrome-login requires a host" }); return }
+  const field: browserCreds.BrowserLoginField = spec && spec.field === "user" ? "user" : "pass"
+  const browserKey = spec && typeof spec.browser === "string" && spec.browser ? spec.browser : undefined
+  if (!host) { reply({ success: false, error: "--browser-login requires a host" }); return }
 
   // Bind the fill to the live page. The delivery target derivation already
   // resolves the tab's host for the browser surface.
   let pageHost = ""
   try {
     const target = await targetForAction(action, actionType, request)
-    if (target.kind !== "browser") { reply({ success: false, error: "--chrome-login only fills browser fields" }); return }
+    if (target.kind !== "browser") { reply({ success: false, error: "--browser-login only fills browser fields" }); return }
     pageHost = (target.id ?? "").toLowerCase()
   } catch (err) { reply({ success: false, error: (err as Error).message }); return }
 
-  if (!chromeCreds.hostMatches(pageHost, host)) {
-    emitEvent("chrome_login", { requestId: id, host, pageHost, field, action: actionType, outcome: "denied", code: "host_mismatch" })
-    reply({ success: false, error: `--chrome-login host '${host}' does not match the current page host '${pageHost}'`, code: "host_mismatch" })
+  if (!browserCreds.hostMatches(pageHost, host)) {
+    emitEvent("browser_login", { requestId: id, host, pageHost, field, browser: browserKey, action: actionType, outcome: "denied", code: "host_mismatch" })
+    reply({ success: false, error: `--browser-login host '${host}' does not match the current page host '${pageHost}'`, code: "host_mismatch" })
     return
   }
 
   let value: string
   let resolvedOrigin: string
+  let resolvedBrowser: string
   try {
-    const res = chromeCreds.resolveLogin(host, field)
+    const res = browserCreds.resolveLogin(host, field, browserKey)
     value = res.value
     resolvedOrigin = res.originUrl
+    resolvedBrowser = res.browser
   } catch (err) {
-    const e = err as chromeCreds.ChromeCredsError
-    emitEvent("chrome_login", { requestId: id, host, field, action: actionType, outcome: "denied", code: e.code ?? "error" })
+    const e = err as browserCreds.BrowserCredsError
+    emitEvent("browser_login", { requestId: id, host, field, browser: browserKey, action: actionType, outcome: "denied", code: e.code ?? "error" })
     reply({ success: false, error: e.message, code: e.code })
     return
   }
@@ -808,18 +813,18 @@ async function deliverWithChromeLogin(id: string, action: Record<string, unknown
   // Defense in depth: the credential's own origin must also match the page.
   let originHost = ""
   try { originHost = new URL(resolvedOrigin).hostname.toLowerCase() } catch {}
-  if (originHost && !chromeCreds.hostMatches(pageHost, originHost) && !chromeCreds.hostMatches(originHost, pageHost)) {
-    emitEvent("chrome_login", { requestId: id, host, pageHost, field, action: actionType, outcome: "denied", code: "origin_mismatch" })
+  if (originHost && !browserCreds.hostMatches(pageHost, originHost) && !browserCreds.hostMatches(originHost, pageHost)) {
+    emitEvent("browser_login", { requestId: id, host, pageHost, field, browser: resolvedBrowser, action: actionType, outcome: "denied", code: "origin_mismatch" })
     reply({ success: false, error: `resolved credential origin '${originHost}' does not match the page host '${pageHost}'`, code: "origin_mismatch" })
     return
   }
   if (field === "pass" && value.length === 0) {
-    reply({ success: false, error: `saved Chrome login for '${host}' has an empty password`, code: "not_found" })
+    reply({ success: false, error: `saved login for '${host}' has an empty password`, code: "not_found" })
     return
   }
 
-  emitEvent("chrome_login", { requestId: id, host, pageHost, field, action: actionType, outcome: "released" })
-  await deliverResolvedValue(id, action, request, socket, actionType, value, ["chromeLogin"])
+  emitEvent("browser_login", { requestId: id, host, pageHost, field, browser: resolvedBrowser, action: actionType, outcome: "released" })
+  await deliverResolvedValue(id, action, request, socket, actionType, value, ["browserLogin"])
 }
 
 // Start bridge connection on daemon startup
@@ -1935,15 +1940,15 @@ const socketHandlers: Bun.SocketHandler<undefined> = {
             })
             continue
           }
-          // issue #248: read-only Chrome credential enumeration, and the
-          // `type --chrome-login` fill that resolves a saved password here.
-          if (action?.type === "chrome_creds") {
-            handleChromeCredsAction(action).then((result) => socketWriteFramed(socket, JSON.stringify({ id, result })))
+          // issue #248: read-only browser credential enumeration, and the
+          // `type --browser-login` fill that resolves a saved password here.
+          if (action?.type === "browser_creds") {
+            handleBrowserCredsAction(action).then((result) => socketWriteFramed(socket, JSON.stringify({ id, result })))
             continue
           }
-          if (action && action.chromeLogin && typeof action.chromeLogin === "object") {
-            deliverWithChromeLogin(id, action, request, socket, actionType).catch((err) => {
-              socketWriteFramed(socket, JSON.stringify({ id, result: { success: false, error: `chrome-login delivery failed: ${(err as Error).message}` } }))
+          if (action && action.browserLogin && typeof action.browserLogin === "object") {
+            deliverWithBrowserLogin(id, action, request, socket, actionType).catch((err) => {
+              socketWriteFramed(socket, JSON.stringify({ id, result: { success: false, error: `browser-login delivery failed: ${(err as Error).message}` } }))
             })
             continue
           }

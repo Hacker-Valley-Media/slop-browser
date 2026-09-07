@@ -80,7 +80,7 @@ export function parseActionsCommand(filtered: string[], positionalCount?: number
       // callers (tests) that don't pass the boundary working.
       const textArgs = positionalCount !== undefined
         ? filtered.slice(2, positionalCount + 1)
-        : filtered.slice(2).filter(a => a !== "--append" && a !== "--user" && !TRUSTED_FLAG_VALUES.includes(a) && a !== "--secret" && a !== "--chrome-login" && filtered[filtered.indexOf(a) - 1] !== "--secret" && filtered[filtered.indexOf(a) - 1] !== "--chrome-login")
+        : filtered.slice(2).filter(a => a !== "--append" && a !== "--user" && !TRUSTED_FLAG_VALUES.includes(a) && a !== "--secret" && a !== "--browser-login" && a !== "--browser" && filtered[filtered.indexOf(a) - 1] !== "--secret" && filtered[filtered.indexOf(a) - 1] !== "--browser-login" && filtered[filtered.indexOf(a) - 1] !== "--browser")
       // issue #244: `--secret <name>` types a vault value by name. The daemon
       // resolves it after logging and checks the page host against the
       // secret's allowlist; the CLI process never holds the value.
@@ -93,22 +93,27 @@ export function parseActionsCommand(filtered: string[], positionalCount?: number
         if (target.semantic) return { type: "find_and_type", name: target.semantic.name, role: target.semantic.role, secret: secretName, clear: !append }
         return { type: "input_text", ...target, secret: secretName, clear: !append }
       }
-      // issue #248: `--chrome-login <host>` fills a field from Chrome's own
-      // saved logins for the current page. `--user` picks the username, else
-      // the password. The daemon reads and decrypts the credential, verifies
-      // the requested host matches the live page host, and delivers the value
-      // by the same leaked-proof legs as --secret; the CLI never holds it.
-      const chromeIdx = filtered.indexOf("--chrome-login")
-      if (chromeIdx !== -1) {
-        const host = filtered[chromeIdx + 1]
-        if (!host || host.startsWith("--")) { console.error("error: --chrome-login requires a host (e.g. --chrome-login my.functionhealth.com)"); process.exit(1) }
-        if (secretIdx !== -1) { console.error("error: --chrome-login and --secret are mutually exclusive"); process.exit(1) }
-        if (textArgs.join("").length) { console.error("error: --chrome-login and literal text are mutually exclusive"); process.exit(1) }
+      // issue #248: `--browser-login <host>` fills a field from a Chromium
+      // browser's own saved logins for the current page. `--user` picks the
+      // username, else the password. `--browser <key>` restricts to one browser
+      // (chrome|brave|vivaldi|edge|chromium|arc); default searches all installed.
+      // The daemon reads and decrypts the credential, verifies the requested
+      // host matches the live page host, and delivers the value by the same
+      // leak-proof legs as --secret; the CLI never holds it.
+      const browserLoginIdx = filtered.indexOf("--browser-login")
+      if (browserLoginIdx !== -1) {
+        const host = filtered[browserLoginIdx + 1]
+        if (!host || host.startsWith("--")) { console.error("error: --browser-login requires a host (e.g. --browser-login my.functionhealth.com)"); process.exit(1) }
+        if (secretIdx !== -1) { console.error("error: --browser-login and --secret are mutually exclusive"); process.exit(1) }
+        if (textArgs.join("").length) { console.error("error: --browser-login and literal text are mutually exclusive"); process.exit(1) }
         const field = filtered.includes("--user") ? "user" : "pass"
-        const chromeLogin = { host, field }
-        if (useOs) return { type: "os_type", ...target, chromeLogin }
-        if (target.semantic) return { type: "find_and_type", name: target.semantic.name, role: target.semantic.role, chromeLogin, clear: !append }
-        return { type: "input_text", ...target, chromeLogin, clear: !append }
+        const browserIdx = filtered.indexOf("--browser")
+        const browserKey = browserIdx !== -1 ? filtered[browserIdx + 1] : undefined
+        if (browserIdx !== -1 && (!browserKey || browserKey.startsWith("--"))) { console.error("error: --browser requires a value (chrome|brave|vivaldi|edge|chromium|arc)"); process.exit(1) }
+        const browserLogin: { host: string; field: string; browser?: string } = browserKey ? { host, field, browser: browserKey } : { host, field }
+        if (useOs) return { type: "os_type", ...target, browserLogin }
+        if (target.semantic) return { type: "find_and_type", name: target.semantic.name, role: target.semantic.role, browserLogin, clear: !append }
+        return { type: "input_text", ...target, browserLogin, clear: !append }
       }
       if (useOs) {
         return { type: "os_type", ...target, text: textArgs.join(" ") }

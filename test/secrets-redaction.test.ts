@@ -47,11 +47,11 @@ describe("actionLogSummary", () => {
     expect(actionLogSummary({ type: "os_type", text: VALUE, sensitive: true })).toContain("<redacted>")
   })
 
-  test("chrome-login deliveries are secret-bearing and hide the filled value", () => {
-    // issue #248: the request carries host+field only (safe to log), the
-    // resolved delivery carries the value in text/inputText with sensitive:true.
-    expect(isSecretBearing({ type: "input_text", ref: "e1", chromeLogin: { host: "my.functionhealth.com", field: "pass" } })).toBe(true)
-    const req = actionLogSummary({ type: "input_text", ref: "e1", chromeLogin: { host: "my.functionhealth.com", field: "pass" } })
+  test("browser-login deliveries are secret-bearing and hide the filled value", () => {
+    // issue #248: the request carries host+field(+browser) only (safe to log),
+    // the resolved delivery carries the value in text/inputText with sensitive:true.
+    expect(isSecretBearing({ type: "input_text", ref: "e1", browserLogin: { host: "my.functionhealth.com", field: "pass", browser: "brave" } })).toBe(true)
+    const req = actionLogSummary({ type: "input_text", ref: "e1", browserLogin: { host: "my.functionhealth.com", field: "pass" } })
     expect(req).toContain("my.functionhealth.com")
     const delivered = actionLogSummary({ type: "input_text", ref: "e1", text: VALUE, sensitive: true })
     expect(delivered).not.toContain(VALUE)
