@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   htons, buildPlistXml, encodeUsbmuxMessage, tryReadUsbmuxMessage, plistInteger,
-  parseDeviceListXml, pickUsbmuxDeviceId,
+  parseDeviceListXml, pickUsbmuxDeviceId, parseUsbmuxNetworkAddress,
 } from "../daemon/ios/usbmux-forward"
 
 // These lock the native usbmux wire format against the go-ios / pymobiledevice3
@@ -76,12 +76,76 @@ describe("usbmux wire format", () => {
     ])
   })
 
+  test("parseUsbmuxNetworkAddress decodes a Darwin sockaddr_in / sockaddr_in6, rejects the rest", () => {
+    // sockaddr_in: len=16, family=2 (AF_INET), port, addr 192.168.1.57, zero pad
+    const v4 = Buffer.from([16, 2, 0, 0, 192, 168, 1, 57, 0, 0, 0, 0, 0, 0, 0, 0]).toString("base64")
+    expect(parseUsbmuxNetworkAddress(v4)).toBe("192.168.1.57")
+    // sockaddr_in6: len=28, family=30 (AF_INET6), port, flowinfo, addr fe80::1, scope
+    const v6 = Buffer.concat([
+      Buffer.from([28, 30, 0, 0, 0, 0, 0, 0]),
+      Buffer.from([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]),
+      Buffer.from([0, 0, 0, 0]),
+    ]).toString("base64")
+    expect(parseUsbmuxNetworkAddress(v6)).toBe("fe80:0:0:0:0:0:0:1")
+    expect(parseUsbmuxNetworkAddress(Buffer.from([16, 17, 0, 0, 1, 2, 3, 4]).toString("base64"))).toBeUndefined()
+    expect(parseUsbmuxNetworkAddress(Buffer.from([16, 2, 0]).toString("base64"))).toBeUndefined()
+    expect(parseUsbmuxNetworkAddress("")).toBeUndefined()
+    // base64 split across lines, as plutil emits it
+    expect(parseUsbmuxNetworkAddress(v4.slice(0, 8) + "\n\t" + v4.slice(8))).toBe("192.168.1.57")
+  })
+
+  test("parseDeviceListXml pairs per device when DeviceID is also inside Properties, and carries NetworkAddress", () => {
+    const v4 = Buffer.from([16, 2, 0, 0, 192, 168, 1, 57, 0, 0, 0, 0, 0, 0, 0, 0]).toString("base64")
+    const xml = `<?xml version="1.0"?><plist version="1.0"><dict><key>DeviceList</key><array>` +
+      `<dict><key>DeviceID</key><integer>5</integer><key>MessageType</key><string>Attached</string>` +
+      `<key>Properties</key><dict><key>ConnectionSpeed</key><integer>480000000</integer>` +
+      `<key>ConnectionType</key><string>USB</string><key>DeviceID</key><integer>5</integer>` +
+      `<key>EscrowBag</key><data>YWJj</data><key>SerialNumber</key><string>UDID-AAA</string>` +
+      `<key>USBSerialNumber</key><string>UDIDAAA</string></dict></dict>` +
+      `<dict><key>DeviceID</key><integer>9</integer><key>MessageType</key><string>Attached</string>` +
+      `<key>Properties</key><dict><key>ConnectionType</key><string>Network</string><key>DeviceID</key><integer>9</integer>` +
+      `<key>EscapedFullServiceName</key><string>x._apple-mobdev2._tcp.local.</string><key>InterfaceIndex</key><integer>24</integer>` +
+      `<key>NetworkAddress</key><data>${v4}</data><key>SerialNumber</key><string>UDID-BBB</string></dict></dict>` +
+      `</array></dict></plist>`
+    expect(parseDeviceListXml(xml)).toEqual([
+      { deviceId: 5, udid: "UDID-AAA", connectionType: "USB" },
+      { deviceId: 9, udid: "UDID-BBB", connectionType: "Network", networkAddress: "192.168.1.57", interfaceIndex: 24 },
+    ])
+  })
+
+  test("parseDeviceListXml on the live 2026-09-07 reply: IPv6 NetworkAddress + InterfaceIndex for the Wi-Fi entry, none for USB", () => {
+    // Shape of a live usbmuxd ListDevices reply (plutil xml1), identifiers synthetic. The phone is on en1
+    // (InterfaceIndex 24) and usbmuxd reports its GLOBAL IPv6, so an IPv4 subnet
+    // match can never work; the index is what identifies the Mac interface.
+    const xml = `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>DeviceList</key><array>
+		<dict><key>DeviceID</key><integer>1384</integer><key>MessageType</key><string>Attached</string>
+		<key>Properties</key><dict><key>ConnectionType</key><string>Network</string><key>DeviceID</key><integer>1384</integer>
+		<key>EscapedFullServiceName</key><string>02:00:00:aa:bb:cc@fe80::ff:feaa:bbcc-supportsRP-26._apple-mobdev2._tcp.local.</string>
+		<key>InterfaceIndex</key><integer>24</integer>
+		<key>NetworkAddress</key><data>
+				HB4AAAAAAAAgAQ24AAEAAgADAAQABQAGAAAAAAAAAAAA
+				AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+				AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+				AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+				</data>
+		<key>SerialNumber</key><string>00008030-000A1B2C3D4E5F60</string></dict></dict>
+		<dict><key>DeviceID</key><integer>1383</integer><key>MessageType</key><string>Attached</string>
+		<key>Properties</key><dict><key>ConnectionSpeed</key><integer>480000000</integer><key>ConnectionType</key><string>USB</string>
+		<key>DeviceID</key><integer>1383</integer><key>LocationID</key><integer>84934656</integer><key>ProductID</key><integer>4776</integer>
+		<key>SerialNumber</key><string>00008030-000A1B2C3D4E5F60</string><key>USBSerialNumber</key><string>00008030000A1B2C3D4E5F60</string></dict></dict>
+		</array></dict></plist>`
+    expect(parseDeviceListXml(xml)).toEqual([
+      { deviceId: 1384, udid: "00008030-000A1B2C3D4E5F60", connectionType: "Network", networkAddress: "2001:db8:1:2:3:4:5:6", interfaceIndex: 24 },
+      { deviceId: 1383, udid: "00008030-000A1B2C3D4E5F60", connectionType: "USB" },
+    ])
+  })
+
   test("pickUsbmuxDeviceId matches lower-case context UDIDs and prefers USB", () => {
     const devices = [
-      { deviceId: 9, udid: "00008150-0006290C2282401C", connectionType: "Network" },
-      { deviceId: 5, udid: "00008150-0006290C2282401C", connectionType: "USB" },
+      { deviceId: 9, udid: "00008030-000A1B2C3D4E5F60", connectionType: "Network" },
+      { deviceId: 5, udid: "00008030-000A1B2C3D4E5F60", connectionType: "USB" },
     ]
-    expect(pickUsbmuxDeviceId(devices, "00008150-0006290c2282401c")).toBe(5)
+    expect(pickUsbmuxDeviceId(devices, "00008030-000a1b2c3d4e5f60")).toBe(5)
   })
 
   test("plistInteger pulls a top-level integer value", () => {

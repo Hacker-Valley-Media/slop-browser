@@ -22,12 +22,13 @@ import {
   type WirSetupVariant, type WipEnvelopeMode, type WirTransport,
   type IosWebActionMode, type IosWebActionModeReport,
 } from "../../shared/ios-web"
-import { iosContextId, iosUdidSlug, udidFromContextId, isIosContextId } from "../../shared/ios-device"
+import { iosContextId, iosUdidSlug, isIosContextId } from "../../shared/ios-device"
 import {
   IosDeviceServiceBroker, discoverWebLaneDevices, reconcileByUdid, adaptNetSocket,
   type DeviceByteChannel, type WebLaneDevice, type ManagerDescriptorLite,
 } from "./device-services"
 import { connectServiceSocket } from "./lockdown"
+import { resolveUdid } from "./state"
 import {
   WebInspectorTransport, type RawWebTarget, type ParsedApplication,
 } from "./webinspector-transport"
@@ -534,7 +535,7 @@ export class IosWebManager {
     outerContextId?: string,
   ): Promise<{ state: DeviceState } | { error: IosWebResult }> {
     const explicit = firstString(action.device) ?? (isIosContextId(outerContextId) ? outerContextId : firstString(outerContextId))
-    let udid = explicit ? udidFromContextId(explicit) ?? explicit : undefined
+    let udid = explicit ? resolveUdid(explicit) : undefined
 
     if (!udid) {
       // Sole discoverable paired device, else offer choices.

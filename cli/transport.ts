@@ -216,6 +216,11 @@ export type DaemonResponse = {
 let globalGroup: string | undefined
 let globalGroupColor: string | undefined
 let globalGroupSoft = false
+let globalFrame: number | undefined
+
+export class ActionValidationError extends Error {}
+
+export function setGlobalFrame(frameId?: number): void { globalFrame = frameId }
 
 export function setGlobalGroup(group?: string, groupColor?: string, soft = false): void {
   globalGroup = group
@@ -225,6 +230,12 @@ export function setGlobalGroup(group?: string, groupColor?: string, soft = false
 
 /** Exported for tests (wire-shape assertion); production callers use sendCommand. */
 export function withGroup(action: Action): Action {
+  if (globalFrame !== undefined) {
+    if (action.frameId !== undefined && action.frameId !== globalFrame) {
+      throw new ActionValidationError("element frame conflicts with --frame; use the frame from the fresh element ref")
+    }
+    action = { ...action, frameId: globalFrame }
+  }
   if (!globalGroup || action.group !== undefined) return action
   const scoped: Action = { ...action, group: globalGroup }
   // Automatic session scope is a preference, not an isolation boundary.

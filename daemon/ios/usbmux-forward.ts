@@ -98,7 +98,37 @@ const CLIENT_TAGS = {
   kLibUSBMuxVersion: 3,
 } as const
 
-type MuxDevice = { deviceId: number; udid: string; connectionType: string }
+export type MuxDevice = { deviceId: number; udid: string; connectionType: string; networkAddress?: string; interfaceIndex?: number }
+
+/**
+ * Decode usbmuxd's `NetworkAddress` <data>: a raw Darwin `struct sockaddr`
+ * (libusbmuxd memcpy's it verbatim; libimobiledevice reads `sa_family` from it).
+ * Byte 0 sa_len, byte 1 sa_family. AF_INET (2) → address at bytes 4-7;
+ * AF_INET6 (30) → address at bytes 8-23. Anything else → undefined.
+ */
+export function parseUsbmuxNetworkAddress(base64: string): string | undefined {
+  const b = Buffer.from(base64.replace(/\s+/g, ""), "base64")
+  if (b.length < 8) return undefined
+  const family = b[1]
+  if (family === 2) return `${b[4]}.${b[5]}.${b[6]}.${b[7]}`
+  if (family === 30 && b.length >= 24) {
+    const groups: string[] = []
+    for (let i = 8; i < 24; i += 2) groups.push(b.readUInt16BE(i).toString(16))
+    return groups.join(":")
+  }
+  return undefined
+}
+
+/** Each device entry of a ListDevices reply is a depth-2 <dict> (plist > dict > array > dict). */
+function deviceDicts(xml: string): string[] {
+  const chunks: string[] = []
+  let depth = 0, start = -1
+  for (const m of xml.matchAll(/<\/?dict>/g)) {
+    if (m[0] === "<dict>") { depth++; if (depth === 2) start = m.index! }
+    else { if (depth === 2 && start >= 0) { chunks.push(xml.slice(start, m.index! + "</dict>".length)); start = -1 }; depth-- }
+  }
+  return chunks
+}
 
 /**
  * One-shot usbmux request → first response payload, over a fresh usbmuxd socket.
@@ -142,18 +172,28 @@ function plistToXml(payload: Buffer): string {
 
 /**
  * Pure parse of a usbmux ListDevices plist (as XML) into {deviceId, udid,
- * connectionType}. Each device dict carries exactly one DeviceID and one
- * SerialNumber (+ ConnectionType inside Properties), emitted in device order —
- * so the i-th DeviceID pairs with the i-th SerialNumber. Robust against the
- * `<data>` fields that break JSON conversion.
+ * connectionType, networkAddress?, interfaceIndex?}. Parsed per device dict, so a reply that
+ * carries DeviceID both top-level and inside Properties (libusbmuxd reads it
+ * from Properties) still pairs every field with its own device. Robust against
+ * the `<data>` fields that break JSON conversion.
  */
 export function parseDeviceListXml(xml: string): MuxDevice[] {
-  const ids = [...xml.matchAll(/<key>DeviceID<\/key>\s*<integer>(\d+)<\/integer>/g)].map((m) => parseInt(m[1], 10))
-  const udids = [...xml.matchAll(/<key>SerialNumber<\/key>\s*<string>([^<]+)<\/string>/g)].map((m) => m[1])
-  const types = [...xml.matchAll(/<key>ConnectionType<\/key>\s*<string>([^<]+)<\/string>/g)].map((m) => m[1])
   const out: MuxDevice[] = []
-  for (let i = 0; i < Math.min(ids.length, udids.length); i++) {
-    out.push({ deviceId: ids[i], udid: udids[i], connectionType: types[i] ?? "USB" })
+  for (const dict of deviceDicts(xml)) {
+    const udid = dict.match(/<key>SerialNumber<\/key>\s*<string>([^<]+)<\/string>/)?.[1]
+    const id = dict.match(/<key>DeviceID<\/key>\s*<integer>(\d+)<\/integer>/)?.[1]
+    if (!udid || !id) continue
+    const connectionType = dict.match(/<key>ConnectionType<\/key>\s*<string>([^<]+)<\/string>/)?.[1] ?? "USB"
+    const addr = dict.match(/<key>NetworkAddress<\/key>\s*<data>([^<]*)<\/data>/)?.[1]
+    const networkAddress = addr ? parseUsbmuxNetworkAddress(addr) : undefined
+    // The Mac interface the Wi-Fi device was discovered on (= os.networkInterfaces() scopeid).
+    const ifIndex = dict.match(/<key>InterfaceIndex<\/key>\s*<integer>(\d+)<\/integer>/)?.[1]
+    const interfaceIndex = ifIndex ? parseInt(ifIndex, 10) : undefined
+    out.push({
+      deviceId: parseInt(id, 10), udid, connectionType,
+      ...(networkAddress ? { networkAddress } : {}),
+      ...(interfaceIndex ? { interfaceIndex } : {}),
+    })
   }
   return out
 }
@@ -197,7 +237,7 @@ type BridgeState = { device: DeviceSock | null; pending: Buffer[] }
 export async function usbmuxForward(udid: string, devicePort: number, hostPort: number): Promise<UsbmuxForward> {
   const deviceId = await resolveDeviceId(udid)
   if (deviceId === undefined) {
-    throw new Error(`usbmux: device '${udid}' not visible to usbmuxd (is it plugged in and trusted?)`)
+    throw new Error(`usbmux: device '${udid}' not visible to usbmuxd — plug it in over USB (trusted) or put it on the same Wi-Fi as this Mac (a VPN such as Tailscale cannot reach the phone's pairing services)`)
   }
 
   const server = Bun.listen<BridgeState>({

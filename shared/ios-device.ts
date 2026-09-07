@@ -118,7 +118,20 @@ export type IosDeviceState = {
   /** Runner signing expiry epoch ms, when known (1-yr paid / 7-day free). */
   signingExpiresAt?: number
   registeredAt: number
+  /** ws://host:port the runner is handed to dial back, and which ladder rung chose it. */
+  dialBack?: string
+  dialBackVia?: IosDialBackVia
 }
+
+/**
+ * Which rung of the dial-back ladder picked the runner's WebSocket host:
+ * `override` (INTERCEPTOR_WS_URL), `loopback` (simulator), `vpn` (CGNAT utun —
+ * exempt from iOS Local Network privacy), `interface` (the Mac interface usbmuxd
+ * discovered the phone on, matched by InterfaceIndex; works whatever address
+ * family usbmuxd reports), `subnet` (Mac interface on the phone's own IPv4
+ * subnet), `default-route`, `first` (first non-internal IPv4).
+ */
+export type IosDialBackVia = "override" | "loopback" | "vpn" | "interface" | "subnet" | "default-route" | "first"
 
 // ── Pure helpers (unit tested) ────────────────────────────────────────────────
 

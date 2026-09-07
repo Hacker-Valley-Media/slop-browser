@@ -37,7 +37,7 @@ export function initializeActionRouter(): void {
   restorePageCommCaptureConfig()
 }
 
-type ActionResult = { success: boolean; error?: string; data?: unknown; tabId?: number }
+type ActionResult = { success: boolean; error?: string; data?: unknown; tabId?: number; warning?: string }
 
 const OS_INPUT_ACTIONS = new Set(["os_click", "os_key", "os_type", "os_move"])
 const SCREENSHOT_ACTIONS = new Set(["screenshot", "screenshot_background", "page_capture", "ocr"])
@@ -170,6 +170,18 @@ export async function routeAction(
             reason: action.os === true ? "scene click requested trusted input" : "no DOM mutation after synthetic click"
           }
         },
+        tabId
+      }
+    }
+    const guardRefused = action.os !== true
+      && !!(typeof osResult.data === "object" && osResult.data && (osResult.data as { hint?: string }).hint)
+    if (guardRefused) {
+      // Only the synthetic layer ran: the foreground guard (issue #166) refused
+      // to fire an OS event at a backgrounded tab. That is a skipped escalation,
+      // not a failed click, so report the synthetic delivery and say so.
+      return {
+        ...contentResult,
+        warning: `${contentResult.warning}; OS-level escalation skipped: ${osResult.error}`,
         tabId
       }
     }

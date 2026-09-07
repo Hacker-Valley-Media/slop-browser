@@ -78,11 +78,14 @@ they work even when the runner is idle or asleep. Routed before the runner fallb
   they never go stale the way server-side element ids do — but they only reflect the
   screen at read time. Re-read after any navigation.
 - **Unlocked + foreground.** A locked phone refuses app launches. Keep Auto-Lock off so
-  the runner stays resident; while it is resident, `ios unlock --secret <name>` clears the
-  lock screen. After a reboot the runner cannot start on a locked phone, so unlock once by hand.
+  the runner stays resident; while connected, `ios unlock --secret <name>` attempts
+  passcode entry and requires an observed unlocked state for success. Disconnected unlock
+  and `--probe` fail immediately. Unlock once and run `ios tree` to connect first.
 - **Passcodes come from the vault.** Nothing can fake Face ID or Apple Pay. A passcode sheet
   is typed with `ios type <ref> --secret <name>` / `ios keys --secret <name>`; never put a
   passcode in a literal `type` call. Register it once with
   `interceptor macos secret register <name> --target ios`.
 - **After a device reboot.** The phone drops off usbmux (its Wi‑Fi route is cleared even though `xcrun devicectl list devices` still lists it) → a brief USB cable touch reseeds it. The first runner launch also pops an on-device *"Enter iPhone Passcode for XCTest — Enable UI Automation"* dialog; approve it, then a daemon restart clears the stale testmanagerd session. Runner-free lanes (`proc`/`shot`) keep working through all of this.
+- **Runner never registers (`did not register within 120s`).** The error names the address the runner was handed and the rung that chose it (`ios status` → `dialBack` / `dialBackVia`). A local-network address (rungs `interface`, `subnet`, `default-route`, `first`) is silently denied while the runner's Local Network privilege is still undetermined: XCTest backgrounds the runner before it dials, and iOS denies a backgrounded app's local-network connection without showing the alert (TN3179). Once Settings › Privacy & Security › Local Network shows InterceptorRunner-Runner switched on, LAN dial-back registers in about 10 s. Fixes: grant that switch, or put the phone and Mac on the same VPN (Tailscale), which the daemon prefers automatically (`dialBackVia: vpn`). `INTERCEPTOR_WS_URL` overrides the ladder.
+- **Away from home (phone on cellular + VPN only).** Not driveable: iOS does not expose lockdown (62078) or RemotePairing (49152) on the VPN interface (`Connection refused`), so usbmuxd cannot see the phone and no runner can be launched. A computer next to the phone (USB or its Wi-Fi) must run the daemon. Runner-free lanes are equally blocked.
 - Add `--json` to any command for machine-readable output.

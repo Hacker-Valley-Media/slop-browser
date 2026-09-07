@@ -21,7 +21,7 @@ import { chooseOutboundTransport, isRelayPing, relaySlotAfterClose, validateCont
 import { claimContextId, describeContexts, type ContextSocket } from "./context-registration"
 import { failPendingBridgeRequests, formatBridgeUnavailableError, getBridgeRecoveryActions, getBridgeRecoveryLayout } from "./bridge-recovery"
 import { socketWriteAll, drainSocketQueue, releaseSocketQueue } from "./socket-write"
-import { spinWatchdogStep, SPIN_EXIT_TICKS, type SpinWatchdogState } from "./spin-watchdog"
+import { captureSpinSample, spinWatchdogStep, SPIN_EXIT_TICKS, type SpinWatchdogState } from "./spin-watchdog"
 import { cleanupOwnedRuntimeFiles, clearDaemonRuntimeFiles, constantTimeTokenEquals, decideDaemonStartupRole, decideSingletonGate, defaultLifecycleDeps, generateShutdownToken, parseDaemonPidFile, readLockFile, readPidState, spawnDetachedStandaloneDaemon, writeLockFile } from "./lifecycle"
 import { DAEMON_HEALTH_SERVICE, LEGACY_HEALTH_BODY, probeDaemonHealth } from "../shared/daemon-health"
 import { assertNoInstallMaintenance } from "../shared/install-maintenance"
@@ -2322,6 +2322,7 @@ function daemonIsIdle(): boolean {
 let spinState: SpinWatchdogState = { busyIdleTicks: 0 }
 let spinCpu = process.cpuUsage()
 let spinWall = Date.now()
+let spinSampleAttempted = false
 function spinWatchdogTick(): void {
   if (process.env.INTERCEPTOR_SPIN_WATCHDOG === "off") return
   const now = Date.now()
@@ -2336,6 +2337,13 @@ function spinWatchdogTick(): void {
   const rssMb = Math.round(process.memoryUsage().rss / 1048576)
   log(`spin watchdog: ${pct}% CPU over the last ${Math.round(wallMs / 1000)}s with no clients or in-flight requests (tick ${step.state.busyIdleTicks}/${SPIN_EXIT_TICKS}, rss ${rssMb} MiB) — issue #216`)
   emitEvent("daemon_spin_detected", { busyFraction: step.busyFraction, ticks: step.state.busyIdleTicks, rssMb })
+  if (!spinSampleAttempted) {
+    spinSampleAttempted = true
+    void captureSpinSample().then(result => {
+      log(`spin watchdog sample: ${JSON.stringify(result)}`)
+      emitEvent("daemon_spin_sample", result)
+    })
+  }
   if (step.verdict !== "exit") return
   log("spin watchdog: exiting so the next CLI call respawns a fresh daemon (INTERCEPTOR_SPIN_WATCHDOG=off disables this)")
   emitEvent("daemon_spin_exit", { busyFraction: step.busyFraction, ticks: step.state.busyIdleTicks, rssMb })

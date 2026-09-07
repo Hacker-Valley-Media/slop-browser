@@ -14,7 +14,7 @@ Windows surface (UIA, Win32 input, ETW). It does not exist yet — do not stub i
 
 Agent-operator skill for the macOS surface of Interceptor. Use the `interceptor macos *` CLI to drive native macOS applications: AX trees, OS-level trusted input, capture / vision / speech / NLP / Apple Events, monitor-and-replay, overlays. Use `interceptor macos cdp` / `interceptor macos cdp app` for Electron app web contents, and `interceptor macos runtime` for in-process native app runtime control. For content inside a browser tab load `interceptor-browser` instead.
 
-The macOS bridge is a Swift daemon launched as a LaunchAgent / `.app` bundle. Links Apple frameworks only (Accessibility, ScreenCaptureKit, AVFoundation, Speech, Vision, NaturalLanguage, OSLogStore, NSAppleScript, container runtime). No private APIs.
+The macOS bridge is a Swift daemon launched as a LaunchAgent / `.app` bundle. It uses Apple frameworks including Accessibility, ScreenCaptureKit, AVFoundation, Speech and Vision. Some existing capture and runtime paths also use private CGS symbols or injected runtime access. Check the surface reference and actual capability result; public framework support does not guarantee every private path works on every OS release.
 
 This installed skill is self-contained. Source checkouts also have `AGENTS.md`, but packaged users may only have the skill directory below `/Library/Application Support/Interceptor/skills`.
 

@@ -5,6 +5,10 @@ import { IOS_SVC_ACTION_TYPES } from "../shared/ios-service"
 import { IOS_DEV_ACTION_TYPES, IOS_DEV_STREAM_ACTION_TYPES } from "../shared/ios-dev"
 import { IosDevServiceManager } from "../daemon/ios/dev-manager"
 import type { WebLaneDevice } from "../daemon/ios/device-services"
+import { setAlias } from "../daemon/ios/state"
+import { mkdtempSync, rmSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 
 // Locks the routing contract: ios_dev_* is DISJOINT from the native lifecycle/verb,
 // web, and service sets, so a dev action can only reach the runner via the broad
@@ -79,5 +83,20 @@ describe("IosDevServiceManager", () => {
     const mgr = new IosDevServiceManager({ discover: oneDevice })
     const r = await mgr.handle({ type: "ios_spawn" }, "ios:u1")
     expect((r.data as any).code).toBe("bad_request")
+  })
+
+  test("friendly aliases resolve through the same device path as UDIDs", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ios-alias-"))
+    const prior = process.env.INTERCEPTOR_IOS_STATE_PATH
+    process.env.INTERCEPTOR_IOS_STATE_PATH = join(root, "state.json")
+    try {
+      setAlias("phone", "U1")
+      const mgr = new IosDevServiceManager({ discover: oneDevice })
+      expect(await (mgr as any).resolveUdid({}, "phone")).toEqual({ udid: "U1", contextId: "ios:u1" })
+    } finally {
+      if (prior) process.env.INTERCEPTOR_IOS_STATE_PATH = prior
+      else delete process.env.INTERCEPTOR_IOS_STATE_PATH
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

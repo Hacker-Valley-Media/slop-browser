@@ -27,6 +27,7 @@ This installed skill is self-contained. Source checkouts also have `AGENTS.md`, 
 - Default to plain text output. Use `--json` only when piping into scripts or when a downstream tool needs a machine-readable contract.
 - Unknown flags are rejected (exit 1, naming the flag and command) rather than ignored, so a typo never reads as success; `screenshot` writes to disk with `--save`, not `--out`. Fix the flag instead of setting `INTERCEPTOR_LAX_FLAGS=1`.
 - A verb whose result is a failure prints `error: …` and exits non-zero (every browser verb, including `back`/`forward` with no history). Check `$?` in scripts; do not grep stdout for `error:` to detect failure.
+- `eval --main` can recover from strict CSP by stripping the blocking header and reloading the tab. The result discloses that reload. Treat it as state-changing because unsaved page state can be lost; task verification disables this recovery.
 - If an already-loaded unpacked extension behaves stale after a package update, reload it from `chrome://extensions` or `brave://extensions`, or run `interceptor reload` once the extension is reachable.
 - Safari package updates are loaded through the containing app/appex; do not look for a Chrome-style unpacked-extension reload button.
 - Safari suspends its background worker when idle, so `--context safari` can briefly report "context 'safari' not found" between commands and then self-heal. Re-issue the command rather than treating one transient drop as failure. Note two Safari capability limits: `headers add` only modifies recognized standard headers (arbitrary `X-…` names are refused — use `override` instead), and passive `net` capture reflects genuine page traffic, not requests you originate from `eval` (its world is separate from the page's).
@@ -55,6 +56,7 @@ Each workflow is a complete self-contained "you are doing X" procedure. Open the
 | [`workflows/read-and-extract.md`](workflows/read-and-extract.md) | Compound page read + SPA state extraction — pull a specific value off a page |
 | [`workflows/drive-rich-editor.md`](workflows/drive-rich-editor.md) | Canva, Google Docs, Google Slides, design-tool layer manipulation — anything where DOM refs aren't enough |
 | [`workflows/rich-editor-workflows.md`](workflows/rich-editor-workflows.md) | Canva shape insertion, Docs table build+fill, Slides table insert — what works natively vs the `eval --main` last mile |
+| [`workflows/task-state.md`](workflows/task-state.md) | Durable task checkpoints, scoped lessons, compact resume and fresh browser completion checks |
 | [`workflows/google-docs-fill-empty-table-cells.md`](workflows/google-docs-fill-empty-table-cells.md) | Fill empty Docs table cells with the value above (canvas caret + per-char typing + Tab) |
 | [`workflows/canva-custom-size-creation.md`](workflows/canva-custom-size-creation.md) | Create a custom-size Canva design from home (normalized semantic replay) + monitor launch/handoff pattern |
 | [`workflows/cook-in-canvas.md`](workflows/cook-in-canvas.md) | Draw effects/markers directly through a page's own `CanvasRenderingContext2D` (Docs/Excalidraw), pixel-verified |

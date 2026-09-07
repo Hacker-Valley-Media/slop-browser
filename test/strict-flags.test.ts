@@ -37,36 +37,30 @@ afterEach(() => {
 })
 
 describe("strict unknown-flag rejection (#212)", () => {
-  test("a typo'd flag exits 1 naming the flag and the command", () => {
-    expect(() => normalizeArgs(["screenshot", "--zzz-nonsense-flag", "foo"])).toThrow("__exit_1")
-    expect(exitCode).toBe(1)
-    expect(errors.join("\n")).toContain("unknown flag '--zzz-nonsense-flag' for 'screenshot'")
+  test("a typo'd flag throws naming the flag and command without exiting its host", () => {
+    expect(() => normalizeArgs(["screenshot", "--zzz-nonsense-flag", "foo"])).toThrow("unknown flag '--zzz-nonsense-flag' for 'screenshot'")
+    expect(exitCode).toBeUndefined()
   })
 
   test("the issue's sharpest trap: screenshot --out points at --save", () => {
-    expect(() => normalizeArgs(["screenshot", "--out", "/tmp/shot.png"])).toThrow("__exit_1")
-    expect(errors.join("\n")).toContain("'screenshot --save' writes the image to disk")
+    expect(() => normalizeArgs(["screenshot", "--out", "/tmp/shot.png"])).toThrow("'screenshot --save' writes the image to disk")
   })
 
   test("--flag=value form validates the name before '='", () => {
-    expect(() => normalizeArgs(["open", "--bogus=1", "https://example.com"])).toThrow("__exit_1")
-    expect(errors.join("\n")).toContain("unknown flag '--bogus=1' for 'open'")
+    expect(() => normalizeArgs(["open", "--bogus=1", "https://example.com"])).toThrow("unknown flag '--bogus=1' for 'open'")
   })
 
   test("a boolean flag given a value is rejected — net log --redact-auth=true must not export unredacted", () => {
-    expect(() => normalizeArgs(["net", "log", "--redact-auth=true"])).toThrow("__exit_1")
-    expect(errors.join("\n")).toContain("flag '--redact-auth' for 'net' does not take a value")
+    expect(() => normalizeArgs(["net", "log", "--redact-auth=true"])).toThrow("flag '--redact-auth' for 'net' does not take a value")
   })
 
   test("global booleans reject values too, and lax mode does not soften it", () => {
     process.env.INTERCEPTOR_LAX_FLAGS = "1"
-    expect(() => normalizeArgs(["open", "--json=1", "https://example.com"])).toThrow("__exit_1")
-    expect(errors.join("\n")).toContain("does not take a value")
+    expect(() => normalizeArgs(["open", "--json=1", "https://example.com"])).toThrow("does not take a value")
   })
 
   test("the unreleased --no-group spelling is rejected in favor of --shared-group", () => {
-    expect(() => normalizeArgs(["open", "--no-group", "https://example.com"])).toThrow("__exit_1")
-    expect(errors.join("\n")).toContain("unknown flag '--no-group' for 'open'")
+    expect(() => normalizeArgs(["open", "--no-group", "https://example.com"])).toThrow("unknown flag '--no-group' for 'open'")
   })
 
   test("tab new accepts the reuse controls consumed by its shared create parser", () => {
@@ -90,8 +84,7 @@ describe("strict unknown-flag rejection (#212)", () => {
       ["tab", "switch", "123", "--activate"],
     ]) {
       errors = []
-      expect(() => normalizeArgs(args)).toThrow("__exit_1")
-      expect(errors.join("\n")).toContain("is only valid with 'tab new'")
+      expect(() => normalizeArgs(args)).toThrow("is only valid with 'tab new'")
     }
   })
 

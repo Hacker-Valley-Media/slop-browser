@@ -7,7 +7,7 @@
 // full CLI → daemon → extension → CLI exit path is exercised.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { spawn } from "bun"
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -20,6 +20,9 @@ const ENV = {
   INTERCEPTOR_TEMP: TEMP,
   INTERCEPTOR_WS_PORT: String(WS_PORT),
   INTERCEPTOR_IPC_PORT: String(IPC_PORT),
+  INTERCEPTOR_TIMEOUT: "500",
+  FAKE_EXT_ACTIONS: join(TEMP, "actions.jsonl"),
+  INTERCEPTOR_TASKS_DIR: join(TEMP, "tasks"),
 }
 const SOCK = join(TEMP, "interceptor.sock")
 const PID = join(TEMP, "interceptor.pid")
@@ -69,6 +72,93 @@ afterAll(async () => {
 })
 
 describe("CLI exit codes follow the action result (issue #237)", () => {
+  test("task checks honor leading and trailing WebSocket flags through CLI filtering", async () => {
+    for (const op of ["verify", "complete"]) for (const placement of ["leading", "trailing", "ipc"]) {
+      const created = await cli("monitor", "task", "create", "Transport fixture", "--json")
+      expect(created.code).toBe(0)
+      const { taskId } = JSON.parse(created.stdout)
+      const file = join(TEMP, "transport-checkpoint.json")
+      writeFileSync(file, JSON.stringify({ expectedRevision: 0, owner: "test", constraints: [], nextAction: "Verify", lessons: [],
+        target: { contextId: CONTEXT, group: "fixture-task", tabId: 42, frameId: 12, origin: "https://example.com" }, checks: [{ id: "fixture", expression: "fixturePass" }] }))
+      expect((await cli("monitor", "task", "checkpoint", taskId, "--file", file)).code).toBe(0)
+      const args = ["monitor", "task", op, taskId]
+      if (placement === "leading") args.unshift("--ws")
+      if (placement === "trailing") args.push("--ws")
+      const result = await cli(...args)
+      expect(result.code, result.stderr).toBe(0)
+      expect(JSON.parse(result.stdout).verification.passed).toBe(true)
+      expect(result.stderr.includes("→ws evaluate")).toBe(placement !== "ipc")
+    }
+  })
+
+  test("task CLI persists across processes and gates completion on fresh checks", async () => {
+    const created = await cli("monitor", "task", "create", "Verify fixture", "--json")
+    expect(created.code).toBe(0)
+    const { taskId } = JSON.parse(created.stdout)
+    const file = join(TEMP, "checkpoint.json")
+    const d = { expectedRevision: 0, owner: "test", constraints: ["No focus change"], nextAction: "Check fixture", lessons: [],
+      target: { contextId: CONTEXT, group: "fixture-task", tabId: 42, frameId: 12, origin: "https://example.com" }, checks: [{ id: "fixture", expression: "fixtureFail" }] }
+    writeFileSync(file, JSON.stringify(d))
+    expect((await cli("monitor", "task", "checkpoint", taskId, "--file", file, "--json")).code).toBe(0)
+    expect(JSON.parse((await cli("monitor", "task", "resume", taskId)).stdout).constraints).toEqual(d.constraints)
+    const failed = await cli("monitor", "task", "complete", taskId, "--json")
+    expect(failed.code).toBe(1)
+    expect(JSON.parse(failed.stdout).status).toBe("active")
+    d.expectedRevision = 1
+    d.checks[0].expression = "fixturePass"
+    writeFileSync(file, JSON.stringify(d))
+    expect((await cli("monitor", "task", "checkpoint", taskId, "--file", file)).code).toBe(0)
+    const completed = await cli("monitor", "task", "complete", taskId, "--json")
+    expect(completed.code).toBe(0)
+    expect(JSON.parse(completed.stdout)).toMatchObject({ status: "completed", verification: { passed: true, revision: 2 } })
+    const actions = readFileSync(ENV.FAKE_EXT_ACTIONS, "utf8").trim().split("\n").map(s => JSON.parse(s))
+    expect(actions.at(-1)).toMatchObject({ type: "evaluate", group: "fixture-task", groupSoft: false, frameId: 12, noCspReload: true })
+  })
+
+  test("act timeout remains uncertain and exits nonzero", async () => {
+    const run = await cli("act", "e900", "--context", CONTEXT, "--json")
+    expect(run.code).toBe(1)
+    expect(run.stdout + run.stderr).not.toContain("page navigated")
+  })
+
+  test("act closed channel is not proof of navigation", async () => {
+    const run = await cli("act", "e901", "--context", CONTEXT, "--json")
+    expect(run.code).toBe(1)
+    expect(JSON.parse(run.stdout).success).toBe(false)
+  })
+
+  test("act typing excludes global flags and their values", async () => {
+    const run = await cli("act", "e902", "evidence", "--context", CONTEXT, "--json", "--no-read", "--frame", "12")
+    expect(run.code).toBe(0)
+    const actions = readFileSync(ENV.FAKE_EXT_ACTIONS, "utf8").trim().split("\n").map(s => JSON.parse(s))
+    expect(actions.filter(a => a.ref === "e902").at(-1)).toMatchObject({ type: "input_text", text: "evidence", frameId: 12 })
+  })
+
+  test("act rejects an extra click verb with corrective usage", async () => {
+    const run = await cli("act", "click", "e902", "--context", CONTEXT)
+    expect(run.code).toBe(1)
+    expect(run.stderr).toContain("act e902")
+  })
+
+  test("act reports a framed-ref conflict as local validation, not uncertain delivery", async () => {
+    const run = await cli("--frame", "7", "--json", "act", "e12_1", "--context", CONTEXT)
+    expect(run.code).toBe(1)
+    expect(JSON.parse(run.stdout).error).toContain("element frame conflicts")
+    expect(run.stdout + run.stderr).not.toContain("Delivery is unverified")
+  })
+
+  test("eval globals reach the wire without entering the code", async () => {
+    const run = await cli("--frame=12", "eval", "--main", "1+1", "--context", CONTEXT, "--json")
+    expect(run.code).toBe(0)
+    expect(JSON.parse(run.stdout).data).toMatchObject({ type: "evaluate", code: "1+1", world: "MAIN", frameId: 12 })
+  })
+
+  test("eval treats --help after the option terminator as literal code", async () => {
+    const run = await cli("--frame", "12", "--json", "eval", "--context", CONTEXT, "--", "--help")
+    expect(run.code).toBe(0)
+    expect(JSON.parse(run.stdout).data).toMatchObject({ type: "evaluate", code: "--help", frameId: 12 })
+  })
+
   test("back with no history prints Chrome's error and exits 1", async () => {
     const run = await cli("back", "--context", CONTEXT)
     expect(run.stdout).toContain("error: Cannot find a next page in history.")

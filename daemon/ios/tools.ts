@@ -16,9 +16,10 @@
  * (scripts/audit-capability-blind.sh).
  */
 
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync, cpSync, mkdirSync } from "node:fs"
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync, readdirSync, cpSync, mkdirSync, statSync } from "node:fs"
 import { tmpdir, homedir } from "node:os"
 import { join, delimiter, dirname } from "node:path"
+import { createHash } from "node:crypto"
 
 /** Default: use Interceptor's no-Xcode path unless an operator opts out. */
 export function preferNoXcodeIosPath(): boolean {
@@ -265,6 +266,21 @@ export function findXctestrun(dir: string): string | undefined {
   return undefined
 }
 
+function runnerArtifactFingerprint(art: { dir?: string; tar?: string }): string {
+  const hash = createHash("sha256")
+  const walk = (path: string, relative = "") => {
+    const stat = statSync(path)
+    if (stat.isDirectory()) {
+      for (const name of readdirSync(path).sort()) walk(join(path, name), join(relative, name))
+    } else if (stat.isFile()) {
+      hash.update(relative).update("\0").update(readFileSync(path))
+    }
+  }
+  if (art.tar) walk(art.tar, "ios-runner.tar")
+  else if (art.dir) walk(art.dir)
+  return hash.digest("hex")
+}
+
 export type XcodeTeam = {
   teamId: string
   teamName?: string
@@ -408,6 +424,10 @@ export function buildRunnerWithXcode(udid: string, opts: XcodeRunnerBuildOptions
   try {
     rmSync(RUNNER_STAGE_DIR, { recursive: true, force: true })
     cpSync(products, RUNNER_STAGE_DIR, { recursive: true })
+    // Record the bundled baseline, not the signed output's contents. Both
+    // install and launch restage: retain these prepared products until that
+    // baseline changes, just as we retain a locally re-signed bundled runner.
+    writeFileSync(join(RUNNER_STAGE_DIR, ".source-sha256"), runnerArtifactFingerprint(resolveRunnerArtifact()) + "\n", { mode: 0o600 })
   } catch (err) {
     throw new Error(`could not stage the Xcode-built runner: ${(err as Error).message}`)
   }
@@ -438,14 +458,16 @@ export function buildRunnerWithXcode(udid: string, opts: XcodeRunnerBuildOptions
  */
 export function stageRunner(): { dir?: string; error?: string } {
   const dest = RUNNER_STAGE_DIR
-  // Already staged (and the bundle hasn't changed) → reuse.
-  if (findXctestrun(dest) && findRunnerApp(dest)) return { dir: dest }
-
   const art = resolveRunnerArtifact()
-  if (!art.dir && !art.tar) {
-    return { error: "the Interceptor iPhone agent is not bundled — reinstall Interceptor (the pkg ships it under /Library/Application Support/Interceptor)" }
-  }
   try {
+    const fingerprint = runnerArtifactFingerprint(art)
+    let stagedFingerprint = ""
+    try { stagedFingerprint = readFileSync(join(dest, ".source-sha256"), "utf-8").trim() } catch {}
+    if (findXctestrun(dest) && findRunnerApp(dest)
+      && stagedFingerprint === fingerprint) return { dir: dest }
+    if (!art.dir && !art.tar) {
+      return { error: "the Interceptor iPhone agent is not bundled — reinstall Interceptor (the pkg ships it under /Library/Application Support/Interceptor)" }
+    }
     try { rmSync(dest, { recursive: true, force: true }) } catch {}
     if (art.dir) {
       cpSync(art.dir, dest, { recursive: true })
@@ -455,6 +477,7 @@ export function stageRunner(): { dir?: string; error?: string } {
       if (!r.ok) return { error: `could not unpack the agent: ${r.stderr.slice(-200)}` }
     }
     if (!findXctestrun(dest) || !findRunnerApp(dest)) return { error: "the bundled agent artifact is incomplete (missing .app or .xctestrun)" }
+    writeFileSync(join(dest, ".source-sha256"), fingerprint + "\n", { mode: 0o600 })
     return { dir: dest }
   } catch (err) {
     return { error: `could not stage the agent: ${(err as Error).message}` }

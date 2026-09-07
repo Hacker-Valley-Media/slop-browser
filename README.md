@@ -39,7 +39,7 @@ Interceptor gives agents human-style control of the tools you already use — **
 
 - **Interceptor Browser** — runs as a WebExtension inside your actual Chrome, Brave, or Safari session. Your cookies, sessions, logins, and tabs stay intact. Read pages, click, type, navigate, observe network traffic, automate rich editors, record-and-replay user flows.
 - **Interceptor macOS** — runs as a Swift bridge daemon. Drives native macOS apps the same way: structured accessibility trees, OS-level trusted input, on-device vision/speech/NLP, system-wide event monitoring.
-- **Interceptor iOS** — drives any installed app on an owned, unlocked, Developer-Mode iPhone via an on-device XCUITest runner that dials into the daemon over WiFi: ref-tagged element trees, deterministic coordinate taps, reliable text entry, screenshots, and app lifecycle. Plus runner-free **Instruments/telemetry** (`ios proc / top / spawn / kill / location / gpu / shot`), an **on-device JS brain** (`ios eval` — a whole observe→decide→act loop runs on the phone in one round-trip), **WebKit inspection** (`ios web`), and classic-Lockdown **device services** (`ios logs / diag / fs / crash / profiles`). Addressed as `--on <phone>` / `ios:<udid>`. See `interceptor ios help`.
+- **Interceptor iOS** — drives any installed app on an owned, unlocked, Developer-Mode iPhone via an on-device XCUITest runner that dials into the daemon over the network (`interceptor ios status` shows the address it was handed as `dialBack`/`dialBackVia`; a VPN address is preferred, and LAN works once the runner is allowed under Settings › Privacy & Security › Local Network): ref-tagged element trees, deterministic coordinate taps, reliable text entry, screenshots, and app lifecycle. Plus runner-free **Instruments/telemetry** (`ios proc / top / spawn / kill / location / gpu / shot`), an **on-device JS brain** (`ios eval` — a whole observe→decide→act loop runs on the phone in one round-trip), **WebKit inspection** (`ios web`), and classic-Lockdown **device services** (`ios logs / diag / fs / crash / profiles`). Addressed as `--on <phone>` / `ios:<udid>`. See `interceptor ios help`.
 
 The agent calls `interceptor` CLI commands, reads the output, and decides what to do next. No MCP required. No API keys required.
 
@@ -581,6 +581,11 @@ interceptor monitor status --task <taskId>             # Show task envelope stat
 interceptor monitor pause                              # Stop emitting events without ending
 interceptor monitor resume                             # Resume a paused session
 interceptor monitor task attach <taskId> <sessionId>   # Attach an existing source session
+interceptor monitor task create "<objective>"          # Durable agent task; no recording needed
+interceptor monitor task checkpoint <taskId> --file <json>   # Save revisioned constraints, target, checks, lessons
+interceptor monitor task resume <taskId>               # Compact state + scoped lessons for a later session
+interceptor monitor task verify <taskId>               # Run the stored checks now; lifecycle status unchanged
+interceptor monitor task complete <taskId>             # Complete only when every fresh check returns true
 interceptor monitor list                               # All sessions in the event log
 interceptor monitor tail                               # Live tail current session (pretty)
 interceptor monitor tail --raw                         # Live tail (raw JSONL)
@@ -594,6 +599,8 @@ interceptor monitor export <sessionId> --with-bodies   # Include persisted net-b
 Each event line is sparse JSON (short keys: `t`, `s`, `k`, `sid`, `ref`, `r`, `n`, `cause`) so an agent can read a 30-minute session in a few KB. User actions get a session-monotonic `seq`; mutations and network calls fired within 500ms of an action carry `cause: <action_seq>`. Real user events have `tr: true`; interceptor's own synthetic clicks have `tr: false`. The replay-plan generator automatically includes synthetic clicks when no real user events exist in the session (common when an agent drove the browser). Use `--include-synthetic` to force inclusion regardless.
 
 Tasks are task-scoped; monitor sessions are source-scoped. `--task` creates or attaches a durable task envelope under `${INTERCEPTOR_TASKS_DIR:-<platform app support>}/<taskId>/` while preserving the existing browser/macOS source artifacts. `interceptor monitor export <sessionId>` remains a source-session export. `interceptor monitor export --task <taskId> --format timeline|transcript|json` builds a task-level view by deterministically merging attached source logs, then validating semantic transcript entries against source references.
+
+Task checkpoints carry the objective, constraints, owner, browser target (context, group, tab, frame, origin), next action, lessons, and JavaScript predicates. `resume` returns only lessons whose context and origin match. `verify` and `complete` evaluate the predicates fresh in the page's main world without reloading, and `complete` exits nonzero unless every check returns boolean `true`. Writers are serialized by a per-task lock with dead-owner reclaim, and a stale `expectedRevision` is rejected. Schema and workflow: `.agents/skills/interceptor-browser/workflows/task-state.md`.
 
 The rolling live event stream lives in `/tmp/interceptor-events.jsonl`. Export prefers per-session artifacts under `/tmp/interceptor-monitor-sessions/<sessionId>/` (one directory per session containing `events.jsonl`, `session.json`, and `net.jsonl`) and falls back to the rolling event log for legacy sessions. `--with-bodies` uses persisted correlated net-body artifacts when present (body previews are capped at 64 KiB, redact `Authorization` / `Cookie` / token-shaped strings, and only persist JSON / text content types) and otherwise leaves `interceptor net log` hints in the replay output.
 
@@ -670,11 +677,13 @@ interceptor capabilities                     # Check available input layers
 | `--any-tab` | Operate outside the interceptor group (also required to `tab close <id>` / `tab switch <id>` an unmanaged tab) |
 | `--context <id>` | Route command to a specific browser context (profile). See `interceptor contexts`. Omitting this flag succeeds only when exactly one context is connected; the daemon errors when zero or multiple contexts are present. |
 | `--os` | FALLBACK: use OS-level CGEvent (macOS) when synthetic input is observed to fail. Default to synthetic — the pre-load `userActivation` override + `__interceptor_trust` event marker satisfy most `isTrusted` checks. |
-| `--frame <id>` | Target specific iframe |
+| `--frame <id>` | Target exactly that iframe on any browser verb, including `eval`. Accepted before or after the command; a missing frame fails instead of silently running in the top frame. |
 | `--changes` | Include DOM diff in response |
 | `--flag=value`, `--` | `--flag=value` is accepted everywhere; `--` ends flag parsing so a positional may begin with `--` |
 
 Flags are order-independent on browser commands, and **unknown flags are rejected** (exit 1, naming the flag and the command) instead of being ignored — a typo such as `screenshot --out shot.png` no longer looks like a success (`screenshot` writes to disk with `--save`). `INTERCEPTOR_LAX_FLAGS=1` downgrades the rejection to a one-line warning for legacy scripts. `interceptor macos *` and `interceptor ios *` keep their verb-first parsing and are not strict. A command whose result is a failure prints `error: …` (or the JSON envelope under `--json`) **and exits non-zero** — since 0.23.40 that covers every browser verb (`back`/`forward` with no history used to print the error and exit 0), so scripts can trust `$?`.
+
+`interceptor eval` reports thrown exceptions, rejected promises, and syntax errors as failures (exit 1) in both the isolated and `--main` worlds, and supports top-level `await`. `--main` on a strict-CSP page may strip the header and reload the tab once; the result discloses the reload.
 
 ## Browser Recipes
 
@@ -1294,7 +1303,7 @@ interceptor macos authdialog status                 # is an administrator prompt
 interceptor macos authdialog fill --secret <name> [--submit]   # presses "Use Password" on a Touch ID sheet, types, submits
 interceptor macos type [<ref>] --secret <name> [--app X]       # native field (target: macos:<bundleId>)
 interceptor type <ref> --secret <name>              # browser field (target: browser:<host>); monitor records ***SECURE***
-interceptor ios type <ref> --secret <name> | ios keys --secret <name> | ios unlock --secret <name>   # passcode sheets + lock screen
+interceptor ios type <ref> --secret <name> | ios keys --secret <name> | ios unlock --secret <name>   # passcode sheets + lock screen (unlock needs a connected resident runner)
 ```
 
 Items live in the data-protection keychain owned by the signed bridge (login keychain on unsigned dev builds); `~/.interceptor/secrets.json` holds names, gates, targets, and release counts only. Releases are unattended by default; `--gate touchid` asks the OS prompt (Touch ID, Apple Watch, or the Mac password when no sensor is available). A target mismatch fails with `target_denied` and is never retargeted.

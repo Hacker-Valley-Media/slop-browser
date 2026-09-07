@@ -36,7 +36,7 @@ export interface IosDeviceChannel {
   drag(fromX: number, fromY: number, toX: number, toY: number, durationSec?: number): Promise<void>
   /** Type into the foreground app, or into `bundleId` (e.g. SpringBoard for a passcode sheet). */
   sendKeys(text: string, bundleId?: string): Promise<void>
-  pressButton(name: string): Promise<void>
+  pressButton(name: string): Promise<unknown>
   launchApp(bundleId: string): Promise<void>
   activateApp(bundleId: string): Promise<void>
   terminateApp(bundleId: string): Promise<void>
@@ -132,7 +132,7 @@ export class RunnerChannel implements IosDeviceChannel {
   /** issue #244: lock-screen passcode entry (see the runner's `unlock` op). */
   async unlock(passcode?: string, probe = false): Promise<unknown> { return this.send(IOS_RUNNER_OPS.unlock, { passcode: passcode ?? "", probe }) }
 
-  async pressButton(name: string): Promise<void> { await this.send(IOS_RUNNER_OPS.press, { name }) }
+  async pressButton(name: string): Promise<unknown> { return this.send(IOS_RUNNER_OPS.press, { name }) }
 
   /** Diagnostic passthrough for an arbitrary runner op (e.g. "fgdebug"). */
   async rawOp(op: string, args: Record<string, unknown> = {}): Promise<unknown> { return this.send(op, args) }

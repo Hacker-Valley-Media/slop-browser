@@ -42,7 +42,7 @@ import * as signer from "./signer"
 import * as testmanagerd from "./testmanagerd"
 import { helperAvailable, runRemotectl } from "./tunnel"
 import type { RunnerEnv } from "./tunnel"
-import { networkInterfaces } from "node:os"
+import { resolveRunnerDialBack, runnerDialHint, type DialBack } from "./ws-host"
 import net from "node:net"
 
 export type IosResult = { success: boolean; error?: string; data?: unknown }
@@ -64,6 +64,8 @@ type IosDeviceContext = {
   procs: Bun.Subprocess[]
   registeredAt: number
   signingExpiresAt?: number
+  /** The dial-back the live runner was launched with; status reports this, not a fresh resolution. */
+  dialBack?: DialBack
 }
 
 /** A pending `enable` waiting for its InterceptorRunner to dial back in. */
@@ -187,19 +189,15 @@ export class IosManager {
     })
   }
 
-  /** ws://<host>:<port> the on-device runner dials back into. */
-  private daemonWsUrl(kind: IosDeviceKind): string {
-    const override = process.env.INTERCEPTOR_WS_URL
-    if (override) return override
-    const port = this.deps.wsPort
-    if (kind === "simulator") return `ws://127.0.0.1:${port}`
-    // Physical device: it reaches the Mac over the LAN, so it needs a routable IPv4.
-    for (const addrs of Object.values(networkInterfaces())) {
-      for (const ni of addrs ?? []) {
-        if (ni.family === "IPv4" && !ni.internal) return `ws://${ni.address}:${port}`
-      }
-    }
-    return `ws://127.0.0.1:${port}`
+  /**
+   * ws://<host>:<port> the on-device runner dials back into. VPN (CGNAT utun)
+   * first — iOS silently denies a backgrounded runner's first LAN connection
+   * (Local Network privacy) but a VPN address is exempt — then the Mac interface
+   * usbmuxd discovered the phone on (InterfaceIndex), then the phone's IPv4
+   * subnet, then the default route. See ./ws-host.ts.
+   */
+  private resolveDialBack(kind: IosDeviceKind, udid: string): Promise<DialBack> {
+    return resolveRunnerDialBack(kind, udid, this.deps.wsPort)
   }
 
   // ── lifecycle dispatch ───────────────────────────────────────────────────────
@@ -230,6 +228,9 @@ export class IosManager {
     const canonical = this.canonicalContextId(contextId)
     if (!canonical) return { success: false, error: this.noDeviceHint() }
     let ctx = this.contexts.get(canonical)
+    if (!ctx && action.type === "ios_unlock") {
+      return { success: false, error: "ios unlock requires a connected resident runner. It cannot launch a runner on a locked phone. Unlock the phone once, run 'interceptor ios tree' to connect, then retry unlock or --probe while the runner remains resident." }
+    }
     if (!ctx) {
       // Seamless: auto-connect the agent on demand (no manual enable).
       const udid = udidFromContextId(canonical)!
@@ -555,11 +556,12 @@ export class IosManager {
    */
   private async launchRunnerNative(
     descriptor: IosDeviceDescriptor,
-  ): Promise<{ ok: true; channel: RunnerChannel; tunnel: IosTunnelState } | { ok: false; error: string }> {
+  ): Promise<{ ok: true; channel: RunnerChannel; tunnel: IosTunnelState; dialBack: DialBack } | { ok: false; error: string }> {
     const udid = descriptor.udid
     const token = crypto.randomUUID()
+    const dialBack = await this.resolveDialBack(descriptor.kind, udid)
     const env: RunnerEnv = {
-      INTERCEPTOR_WS_URL: this.daemonWsUrl(descriptor.kind), INTERCEPTOR_WS_TOKEN: token,
+      INTERCEPTOR_WS_URL: dialBack.url, INTERCEPTOR_WS_TOKEN: token,
       INTERCEPTOR_UDID: udid, INTERCEPTOR_CONTEXT_ID: descriptor.contextId,
     }
     try {
@@ -570,9 +572,9 @@ export class IosManager {
       }
       await testmanagerd.launchRunner(udid, { bundleId: RUNNER_BUNDLE_ID, env })
       const channel = await this.awaitRunner(udid, token, 120_000)
-      return { ok: true, channel, tunnel: "native" }
+      return { ok: true, channel, tunnel: "native", dialBack }
     } catch (err) {
-      return { ok: false, error: `${(err as Error).message}` }
+      return { ok: false, error: registrationFailure(err as Error, dialBack) }
     }
   }
 
@@ -640,7 +642,7 @@ export class IosManager {
     if (!brought.ok) { for (const p of procs) killChild(p); return { ok: false, error: brought.error } }
     const ctx: IosDeviceContext = {
       descriptor, channel: brought.channel, registry: new IosRefRegistry(),
-      wdaPort: 0, tunnel: brought.tunnel, procs, registeredAt: Date.now(),
+      wdaPort: 0, tunnel: brought.tunnel, procs, registeredAt: Date.now(), dialBack: brought.dialBack,
     }
     this.contexts.set(contextId, ctx)
     this.deps.emit("ios_enabled", { contextId, udid, kind: descriptor.kind, transport: "runner" })
@@ -654,13 +656,14 @@ export class IosManager {
    */
   private async launchRunner(
     descriptor: IosDeviceDescriptor, procs: Bun.Subprocess[],
-  ): Promise<{ ok: true; channel: RunnerChannel; tunnel: IosTunnelState } | { ok: false; error: string }> {
+  ): Promise<{ ok: true; channel: RunnerChannel; tunnel: IosTunnelState; dialBack: DialBack } | { ok: false; error: string }> {
     // no-Xcode path (our tunnel + testmanagerd) by default.
     if (preferNoXcodeIosPath()) return this.launchRunnerNative(descriptor)
 
     const udid = descriptor.udid
     const token = crypto.randomUUID()
-    const wsUrl = this.daemonWsUrl(descriptor.kind)
+    const dialBack = await this.resolveDialBack(descriptor.kind, udid)
+    const wsUrl = dialBack.url
 
     const staged = stageRunner()
     if (staged.error || !staged.dir) return { ok: false, error: staged.error ?? "the Interceptor agent is not available" }
@@ -678,9 +681,9 @@ export class IosManager {
 
     try {
       const channel = await this.awaitRunner(udid, token, 120_000)
-      return { ok: true, channel, tunnel: descriptor.needsTunnel ? "xcode" : "none" }
+      return { ok: true, channel, tunnel: descriptor.needsTunnel ? "xcode" : "none", dialBack }
     } catch (err) {
-      return { ok: false, error: `${(err as Error).message} — confirm the iPhone is unlocked and on the same network as this Mac.` }
+      return { ok: false, error: registrationFailure(err as Error, dialBack) }
     }
   }
 
@@ -750,20 +753,27 @@ export class IosManager {
 
   // ── status ───────────────────────────────────────────────────────────────────
 
-  private status(): IosResult {
-    const data: IosDeviceState[] = [...this.contexts.values()].map((ctx) => ({
-      contextId: ctx.descriptor.contextId,
-      udid: ctx.descriptor.udid,
-      name: ctx.descriptor.name,
-      kind: ctx.descriptor.kind,
-      wayIn: ctx.descriptor.wayIn,
-      productVersion: ctx.descriptor.productVersion,
-      wdaPort: ctx.wdaPort,
-      tunnel: ctx.tunnel,
-      connection: "connected",
-      signingExpiresAt: ctx.signingExpiresAt,
-      registeredAt: ctx.registeredAt,
-    }))
+  private async status(): Promise<IosResult> {
+    const data: IosDeviceState[] = []
+    for (const ctx of this.contexts.values()) {
+      // A runner keeps the URL it was launched with; re-resolving after a route change would report an address it never had.
+      const dial = ctx.dialBack ?? await this.resolveDialBack(ctx.descriptor.kind, ctx.descriptor.udid)
+      data.push({
+        contextId: ctx.descriptor.contextId,
+        udid: ctx.descriptor.udid,
+        name: ctx.descriptor.name,
+        kind: ctx.descriptor.kind,
+        wayIn: ctx.descriptor.wayIn,
+        productVersion: ctx.descriptor.productVersion,
+        wdaPort: ctx.wdaPort,
+        tunnel: ctx.tunnel,
+        connection: "connected",
+        signingExpiresAt: ctx.signingExpiresAt,
+        registeredAt: ctx.registeredAt,
+        dialBack: dial.url,
+        dialBackVia: dial.via,
+      })
+    }
     // The runner drops on idle and re-dials per verb, so live contexts alone make
     // status read empty between calls even though the phone is fully driveable.
     // Also surface every device with our agent installed but no live channel as
@@ -775,9 +785,11 @@ export class IosManager {
       seen.add(contextId)
       const d = this.resolveDescriptor(udid)
         ?? describeIosDevice({ udid, name: aliasForUdid(udid) ?? udid, kind: "device", paired: true, developerMode: true })
+      const dial = await this.resolveDialBack(d.kind, d.udid)
       data.push({
         contextId, udid: d.udid, name: d.name, kind: d.kind, wayIn: d.wayIn,
         productVersion: d.productVersion, tunnel: "none", connection: "disconnected", registeredAt: 0,
+        dialBack: dial.url, dialBackVia: dial.via,
       })
     }
     return { success: true, data }
@@ -907,8 +919,11 @@ export class IosManager {
     }
     const name = map[raw.toLowerCase()]
     if (!name) return { success: false, error: `unknown button '${raw}' (home|lock|volume-up|volume-down)` }
-    await ctx.channel.pressButton(name)
-    return { success: true, data: { pressed: name } }
+    const observed = await ctx.channel.pressButton(name)
+    const detail = observed && typeof observed === "object" ? observed as Record<string, unknown> : {}
+    const data = { pressed: name, ...detail }
+    if (name === "lock" && detail.locked === false) return { success: false, error: "the lock button was delivered but the phone remained unlocked", data }
+    return { success: true, data: name === "lock" && detail.locked !== true ? { ...data, verified: false } : data }
   }
 
   private async verbScreenshot(ctx: IosDeviceContext, action: { [k: string]: unknown }): Promise<IosResult> {
@@ -1008,4 +1023,15 @@ async function pollHealthy(channel: IosDeviceChannel, timeoutMs: number): Promis
     await new Promise((r) => setTimeout(r, 500))
   }
   return false
+}
+
+/**
+ * The runner never registered: say which address it was handed and what that
+ * implies. Only a registration timeout gets the dial-back explanation; a failure
+ * before the launch (usbmuxd cannot see the phone, tunnel down, DTX handshake)
+ * passes through unchanged because no runner was ever told to dial anything.
+ */
+export function registrationFailure(err: Error, dialBack: DialBack): string {
+  if (!/did not register/.test(err.message)) return err.message
+  return `${err.message} — the runner was told to dial ${dialBack.url} (${dialBack.via}). ${runnerDialHint(dialBack)}`
 }

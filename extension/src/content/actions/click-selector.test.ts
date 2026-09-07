@@ -96,3 +96,31 @@ describe("handleClickSelector", () => {
     expect(res.warning).toContain(`--trusted ${res.refId}`)
   })
 })
+
+// Review 2026-09-07: both dispatch paths are synchronous, so a listener that
+// mutates the DOM inline used to be missed (the observer was registered after
+// the dispatch) and the click escalated as "no DOM change".
+describe("synchronous mutation detection", () => {
+  test("handleClickSelector sees a mutation made inside the click listener", async () => {
+    const b = document.createElement("button")
+    b.textContent = "sync"
+    b.addEventListener("click", () => document.body.appendChild(document.createElement("span")))
+    document.body.appendChild(b)
+    const { handleClickSelector } = await import("./click")
+    const r = await handleClickSelector({ type: "click_selector", selector: "button" })
+    expect(r.success).toBe(true)
+    expect(r.warning).toBeUndefined()
+  })
+  test("handleClick (ref) sees a mutation made inside the click listener", async () => {
+    const { handleClick } = await import("./click")
+    const { getOrAssignRef } = await import("../ref-registry")
+    const b = document.createElement("button")
+    b.textContent = "sync-ref"
+    b.addEventListener("click", () => { b.setAttribute("data-clicked", "1") })
+    document.body.appendChild(b)
+    const ref = getOrAssignRef(b)
+    const r = await handleClick({ type: "click", ref })
+    expect(r.success).toBe(true)
+    expect(r.warning).toBeUndefined()
+  })
+})

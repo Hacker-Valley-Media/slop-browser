@@ -61,6 +61,15 @@ describe("RunnerChannel WS protocol", () => {
     expect(await p).toEqual({ x: 0, y: 0, width: 390, height: 844 })
   })
 
+  test("pressButton returns the runner's observed device result", async () => {
+    const { sent, ws } = fakeSocket()
+    const ch = new RunnerChannel(ws)
+    const p = ch.pressButton("lock")
+    expect(sent[0]).toMatchObject({ op: "press", name: "lock" })
+    ch.handleResponse(sent[0].id, { success: true, data: { via: "iohid", locked: false } })
+    expect(await p).toEqual({ via: "iohid", locked: false })
+  })
+
   test("app launch is an 'app' op with action+bundleId", async () => {
     const { sent, ws } = fakeSocket()
     const ch = new RunnerChannel(ws)

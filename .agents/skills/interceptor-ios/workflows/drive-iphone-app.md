@@ -1,3 +1,13 @@
+---
+author: agent
+generated_by: codex (Maestro)
+created: 2026-09-05
+updated: 2026-09-05
+status: final
+reviewed: false
+source: daemon/ios/manager.ts; resident-runner unlock contract
+---
+
 # Workflow: drive an app on a real iPhone
 
 You are completing a task inside an app on the user's physical iPhone. The phone is
@@ -39,5 +49,8 @@ paired and the runner is installed (`interceptor ios devices` lists it).
 - **`keys` vs `type`.** `keys` types into whatever is currently focused; if focus was
   lost (idle reconnect), it goes nowhere. Prefer `type <ref>` when a field is known —
   it focuses atomically.
-- **No secure gates.** You cannot pass Face ID / passcode / Apple Pay or unlock the
-  phone; those are the user's to clear.
+- **Resident unlock only.** A connected runner can attempt `ios unlock --secret
+  ios-passcode`; success requires an observed unlocked state. `--probe` reports
+  state without typing. A disconnected runner cannot launch on a locked phone,
+  so unlock once and connect with `ios tree` first. Face ID and Apple Pay approvals
+  remain user-present actions.
