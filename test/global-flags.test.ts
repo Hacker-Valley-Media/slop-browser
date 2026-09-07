@@ -21,6 +21,12 @@ describe("buildFilteredArgs", () => {
     expect(buildFilteredArgs(["--frame", "0", "--json", "eval", "1+1"])).toEqual(["eval", "1+1"])
   })
 
+  test("strips the global --frame flag from native argv as well", () => {
+    expect(buildFilteredArgs(["--frame", "7", "ios", "tree"])).toEqual(["ios", "tree"])
+    expect(buildFilteredArgs(["macos", "tree", "--frame=7"])).toEqual(["macos", "tree"])
+    expect(buildFilteredArgs(["macos", "monitor", "start", "--frames", "1"])).toEqual(["macos", "monitor", "start", "--frames", "1"])
+  })
+
   test("preserves command-local --json outside leading global positions", () => {
     expect(buildFilteredArgs(["macos", "translate", "batch", "--json", "payload"])).toEqual(["macos", "translate", "batch", "--json", "payload"])
   })

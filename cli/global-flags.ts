@@ -58,9 +58,8 @@ export function buildFilteredArgs(args: string[]): string[] {
     if (arg === "--json") return nativeSurface && index > commandIndex + 1
     return true
   })
-  // Native surfaces own their nested flag grammar. Browser frame selection is
-  // global, including before the command, and must never enter code or text.
-  if (nativeSurface) return filtered
+  // Browser frame selection is global, including before the command, and must
+  // never enter code, text, or the native macos/ios grammars.
   let terminated = false
   let frameValue = false
   return filtered.filter(arg => {

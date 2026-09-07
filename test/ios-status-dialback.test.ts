@@ -19,3 +19,17 @@ test("ios_status carries the resolver's dialBack + dialBackVia on a live context
   expect(mine.dialBackVia).toBe("vpn")
   expect(asked).toContain("device:TEST-DIALBACK")
 })
+
+test("ios_status reports the dial-back the live runner was launched with, not a fresh resolution", async () => {
+  const manager = new IosManager({ emit() {}, wsPort: 19222 }) as any
+  manager.resolveDialBack = async () => ({ url: "ws://100.9.9.9:19222", host: "100.9.9.9", via: "vpn" })
+  manager.contexts.set("ios:test-assigned", {
+    descriptor: { contextId: "ios:test-assigned", udid: "TEST-ASSIGNED", name: "t", kind: "device", wayIn: "runner", productVersion: "27.0" },
+    tunnel: "native", registeredAt: 1, channel: {},
+    dialBack: { url: "ws://192.168.1.130:19222", host: "192.168.1.130", via: "interface" },
+  })
+  const r = await manager.handle({ type: "ios_status" })
+  const mine = (r.data as any[]).find((d) => d.contextId === "ios:test-assigned")
+  expect(mine.dialBack).toBe("ws://192.168.1.130:19222")
+  expect(mine.dialBackVia).toBe("interface")
+})

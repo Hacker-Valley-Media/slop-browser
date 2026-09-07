@@ -617,6 +617,10 @@ export async function runAct(
   const append = flags.includes("--append")
   const noRead = flags.includes("--no-read")
   const keysIdx = flags.indexOf("--keys")
+  if (keysIdx !== -1 && (flags[keysIdx + 1] === undefined || flags[keysIdx + 1].startsWith("--"))) {
+    output(jsonMode, { success: false, error: "act --keys requires a key chord, e.g. interceptor act e5 --keys Enter" })
+    return
+  }
   const timeoutIdx = flags.indexOf("--timeout")
   const timeout = timeoutIdx !== -1 ? parseInt(flags[timeoutIdx + 1]) : 2000
   const valueArgs = filtered.slice(2, positionalEnd)

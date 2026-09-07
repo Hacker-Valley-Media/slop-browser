@@ -39,7 +39,7 @@ Checkpoint format:
 }
 ```
 
-Use the revision returned by resume as the next `expectedRevision`. Checkpointing clears prior verification and reopens the task. A stale writer fails; it must resume before writing again. Lessons optionally contain `text`, `source`, `contextId`, `origin` and `status` (`verified`, `unverified`, or `superseded`). Preserve evidence sources and scope, and mark an obsolete workaround superseded.
+Use the revision returned by resume as the next `expectedRevision`. Checkpointing clears prior verification and reopens the task. A stale writer fails; it must resume before writing again. The `lessons` array is required and may be empty. Each lesson requires `text`, `source`, `contextId`, `origin` and `status` (`verified`, `unverified`, or `superseded`); a lesson missing any field rejects the whole checkpoint. Preserve evidence sources and scope, and mark an obsolete workaround superseded.
 
 Checks are author-supplied JavaScript expressions executed in MAIN on the stored hard-scoped browser target. They must return boolean true; truthy strings and objects fail. Each check compares the frame's origin before evaluation. Use side-effect-free predicates. Verification does not remove CSP or reload the page; a blocked evaluation remains a failed check. This proves only the declared predicates at their recorded times, not all user intent or future state. MCP clients need the operator's arbitrary-exec allowance and confirmation for verify/complete.
 

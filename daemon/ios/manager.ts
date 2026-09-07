@@ -64,6 +64,8 @@ type IosDeviceContext = {
   procs: Bun.Subprocess[]
   registeredAt: number
   signingExpiresAt?: number
+  /** The dial-back the live runner was launched with; status reports this, not a fresh resolution. */
+  dialBack?: DialBack
 }
 
 /** A pending `enable` waiting for its InterceptorRunner to dial back in. */
@@ -554,7 +556,7 @@ export class IosManager {
    */
   private async launchRunnerNative(
     descriptor: IosDeviceDescriptor,
-  ): Promise<{ ok: true; channel: RunnerChannel; tunnel: IosTunnelState } | { ok: false; error: string }> {
+  ): Promise<{ ok: true; channel: RunnerChannel; tunnel: IosTunnelState; dialBack: DialBack } | { ok: false; error: string }> {
     const udid = descriptor.udid
     const token = crypto.randomUUID()
     const dialBack = await this.resolveDialBack(descriptor.kind, udid)
@@ -570,7 +572,7 @@ export class IosManager {
       }
       await testmanagerd.launchRunner(udid, { bundleId: RUNNER_BUNDLE_ID, env })
       const channel = await this.awaitRunner(udid, token, 120_000)
-      return { ok: true, channel, tunnel: "native" }
+      return { ok: true, channel, tunnel: "native", dialBack }
     } catch (err) {
       return { ok: false, error: registrationFailure(err as Error, dialBack) }
     }
@@ -640,7 +642,7 @@ export class IosManager {
     if (!brought.ok) { for (const p of procs) killChild(p); return { ok: false, error: brought.error } }
     const ctx: IosDeviceContext = {
       descriptor, channel: brought.channel, registry: new IosRefRegistry(),
-      wdaPort: 0, tunnel: brought.tunnel, procs, registeredAt: Date.now(),
+      wdaPort: 0, tunnel: brought.tunnel, procs, registeredAt: Date.now(), dialBack: brought.dialBack,
     }
     this.contexts.set(contextId, ctx)
     this.deps.emit("ios_enabled", { contextId, udid, kind: descriptor.kind, transport: "runner" })
@@ -654,7 +656,7 @@ export class IosManager {
    */
   private async launchRunner(
     descriptor: IosDeviceDescriptor, procs: Bun.Subprocess[],
-  ): Promise<{ ok: true; channel: RunnerChannel; tunnel: IosTunnelState } | { ok: false; error: string }> {
+  ): Promise<{ ok: true; channel: RunnerChannel; tunnel: IosTunnelState; dialBack: DialBack } | { ok: false; error: string }> {
     // no-Xcode path (our tunnel + testmanagerd) by default.
     if (preferNoXcodeIosPath()) return this.launchRunnerNative(descriptor)
 
@@ -679,7 +681,7 @@ export class IosManager {
 
     try {
       const channel = await this.awaitRunner(udid, token, 120_000)
-      return { ok: true, channel, tunnel: descriptor.needsTunnel ? "xcode" : "none" }
+      return { ok: true, channel, tunnel: descriptor.needsTunnel ? "xcode" : "none", dialBack }
     } catch (err) {
       return { ok: false, error: registrationFailure(err as Error, dialBack) }
     }
@@ -754,7 +756,8 @@ export class IosManager {
   private async status(): Promise<IosResult> {
     const data: IosDeviceState[] = []
     for (const ctx of this.contexts.values()) {
-      const dial = await this.resolveDialBack(ctx.descriptor.kind, ctx.descriptor.udid)
+      // A runner keeps the URL it was launched with; re-resolving after a route change would report an address it never had.
+      const dial = ctx.dialBack ?? await this.resolveDialBack(ctx.descriptor.kind, ctx.descriptor.udid)
       data.push({
         contextId: ctx.descriptor.contextId,
         udid: ctx.descriptor.udid,

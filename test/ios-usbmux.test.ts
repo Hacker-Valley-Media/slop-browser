@@ -114,7 +114,7 @@ describe("usbmux wire format", () => {
   })
 
   test("parseDeviceListXml on the live 2026-09-07 reply: IPv6 NetworkAddress + InterfaceIndex for the Wi-Fi entry, none for USB", () => {
-    // Captured from /var/run/usbmuxd on this Mac (plutil xml1). The phone is on en1
+    // Shape of a live usbmuxd ListDevices reply (plutil xml1), identifiers synthetic. The phone is on en1
     // (InterfaceIndex 24) and usbmuxd reports its GLOBAL IPv6, so an IPv4 subnet
     // match can never work; the index is what identifies the Mac interface.
     const xml = `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>DeviceList</key><array>
@@ -128,24 +128,24 @@ describe("usbmux wire format", () => {
 				AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 				AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 				</data>
-		<key>SerialNumber</key><string>00008150-0006290C2282401C</string></dict></dict>
+		<key>SerialNumber</key><string>00008030-000A1B2C3D4E5F60</string></dict></dict>
 		<dict><key>DeviceID</key><integer>1383</integer><key>MessageType</key><string>Attached</string>
 		<key>Properties</key><dict><key>ConnectionSpeed</key><integer>480000000</integer><key>ConnectionType</key><string>USB</string>
 		<key>DeviceID</key><integer>1383</integer><key>LocationID</key><integer>84934656</integer><key>ProductID</key><integer>4776</integer>
-		<key>SerialNumber</key><string>00008150-0006290C2282401C</string><key>USBSerialNumber</key><string>000081500006290C2282401C</string></dict></dict>
+		<key>SerialNumber</key><string>00008030-000A1B2C3D4E5F60</string><key>USBSerialNumber</key><string>00008030000A1B2C3D4E5F60</string></dict></dict>
 		</array></dict></plist>`
     expect(parseDeviceListXml(xml)).toEqual([
-      { deviceId: 1384, udid: "00008150-0006290C2282401C", connectionType: "Network", networkAddress: "2001:db8:1:2:3:4:5:6", interfaceIndex: 24 },
-      { deviceId: 1383, udid: "00008150-0006290C2282401C", connectionType: "USB" },
+      { deviceId: 1384, udid: "00008030-000A1B2C3D4E5F60", connectionType: "Network", networkAddress: "2001:db8:1:2:3:4:5:6", interfaceIndex: 24 },
+      { deviceId: 1383, udid: "00008030-000A1B2C3D4E5F60", connectionType: "USB" },
     ])
   })
 
   test("pickUsbmuxDeviceId matches lower-case context UDIDs and prefers USB", () => {
     const devices = [
-      { deviceId: 9, udid: "00008150-0006290C2282401C", connectionType: "Network" },
-      { deviceId: 5, udid: "00008150-0006290C2282401C", connectionType: "USB" },
+      { deviceId: 9, udid: "00008030-000A1B2C3D4E5F60", connectionType: "Network" },
+      { deviceId: 5, udid: "00008030-000A1B2C3D4E5F60", connectionType: "USB" },
     ]
-    expect(pickUsbmuxDeviceId(devices, "00008150-0006290c2282401c")).toBe(5)
+    expect(pickUsbmuxDeviceId(devices, "00008030-000a1b2c3d4e5f60")).toBe(5)
   })
 
   test("plistInteger pulls a top-level integer value", () => {
