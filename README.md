@@ -201,6 +201,7 @@ Interceptor ships one CLI binary with two product surfaces. Pick by what you're 
 | Record & replay a human's native-app flow | macOS | `interceptor macos monitor *` |
 | Drive Apple Events to background apps without raising them | macOS | `interceptor macos intent dispatch` |
 | Deliver a stored password or passcode by name: admin prompts, `sudo`, native or web fields, the iPhone lock screen | macOS / Browser / iOS | `interceptor macos secret *`, `--secret <name>` on `type`, `macos sudo`, `macos authdialog`, `ios unlock` |
+| Log in with a password a Chromium browser already saved (no vault registration) | Browser (macOS) | `interceptor type <ref> --browser-login <host> [--user] [--browser <key>]`, `interceptor browser creds list` |
 | Drive any app on an owned, unlocked iPhone (tree/tap/type/screenshot/app lifecycle/unlock) | iOS | `interceptor ios tree / find / click / type / screenshot / app * / unlock` |
 | Runner-free iPhone process/telemetry, launch/kill, GPS simulation; on-device JS brain; WebKit inspection | iOS | `interceptor ios proc / top / spawn / kill / location / eval`, `ios web *` |
 
@@ -446,6 +447,7 @@ interceptor type e3 "hello"                  # Type into element (synthetic; def
 interceptor type e3 "more" --append          # Append without clearing
 interceptor type "textbox:Search" "query"    # Type using semantic selector (role:name)
 interceptor type e3 --secret <name>          # Type a stored credential by name (see "Secret vault"); the value never leaves the daemon
+interceptor type e3 --browser-login <host> [--user] [--browser <key>]   # Fill a saved login from any installed Chromium browser (password, or username with --user); read + decrypted in the daemon
 interceptor select e7 "option-value"         # Select dropdown option
 interceptor hover e5                         # Hover over element
 interceptor keys "Control+A"                 # Keyboard shortcut (synthetic; default)
@@ -1303,10 +1305,18 @@ interceptor macos authdialog status                 # is an administrator prompt
 interceptor macos authdialog fill --secret <name> [--submit]   # presses "Use Password" on a Touch ID sheet, types, submits
 interceptor macos type [<ref>] --secret <name> [--app X]       # native field (target: macos:<bundleId>)
 interceptor type <ref> --secret <name>              # browser field (target: browser:<host>); monitor records ***SECURE***
+interceptor type <ref> --browser-login <host> [--user] [--browser <key>]   # fill a saved login from any installed Chromium browser; host must match the live tab
+interceptor browser creds list [--host <host>]      # list saved logins across installed Chromium browsers (host + username + browser; no passwords; refused under MCP)
 interceptor ios type <ref> --secret <name> | ios keys --secret <name> | ios unlock --secret <name>   # passcode sheets + lock screen (unlock needs a connected resident runner)
 ```
 
 Items live in the data-protection keychain owned by the signed bridge (login keychain on unsigned dev builds); `~/.interceptor/secrets.json` holds names, gates, targets, and release counts only. Releases are unattended by default; `--gate touchid` asks the OS prompt (Touch ID, Apple Watch, or the Mac password when no sensor is available). A target mismatch fails with `target_denied` and is never retargeted.
+
+#### Browser saved logins (fill a password you never registered)
+
+When the credential already lives in a Chromium browser's own password manager (Chrome, Brave, Vivaldi, Edge, Chromium, Arc), you do not need to register it in the vault. `type --browser-login <host>` reads the saved login for the current page and fills it, searching whichever browsers are installed (or one you name with `--browser <key>`). The browser does not fire its autofill dropdown for a synthetic click, so Interceptor reads the credential at rest instead: it fetches the `<Brand> Safe Storage` key from the login keychain, decrypts the `Login Data` blob (macOS `v10`, AES-128-CBC) for the matching profile, and hands the value to the same delivery leg as `--secret`. The value never appears on argv, in logs, events, monitor artifacts, or MCP results.
+
+The fill is bound to the page: the requested host must match the live tab's host, and the resolved credential's own origin must match too, so a page can only ever fill its own saved login. Enumeration (`browser creds list`) returns host + username + browser only, never the password, and is refused for model callers (`INTERCEPTOR_MCP`). macOS only; the newer app-bound encryption (`v20`) is refused rather than mis-decrypted. Reading `Login Data` requires the daemon to have Full Disk Access.
 
 #### Personal data (TCC-gated)
 
